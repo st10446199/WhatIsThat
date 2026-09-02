@@ -7,6 +7,11 @@
 
 package com.mohammedanaspatel.whatisthat.ui.screens
 
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.SoundPool
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,26 +19,29 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.mohammedanaspatel.whatisthat.R
 import com.mohammedanaspatel.whatisthat.ui.theme.Theme
 import com.mohammedanaspatel.whatisthat.ui.theme.accentTokens
+import kotlinx.coroutines.delay
 
 /**
- * Camera screen - static version (Commit 2). Matches the Figma layout exactly:
- * viewfinder with corner brackets, "?" capture button, offline badge, wordmark.
- *
- * No animations yet (corner pulse, ring expand, shutter flash all land in
- * Commit 3), and no theme picker wiring yet (also Commit 3) - onOpenThemes
- * is accepted but unused for now so the signature doesn't need to change later.
+ * Camera screen - now with animations (Commit 3): pulsing corner brackets,
+ * expanding ring behind the capture button, a shutter flash on tap, and a
+ * shutter click sound played through SoundPool at the phone's actual media
+ * volume (res/raw/shutter_click.wav) - simpler and more predictable than
+ * MediaActionSound, which is intentionally hard for apps to control.
+ * Theme button now wired to open the real ThemePickerSheet via onOpenThemes.
  */
 @Composable
 fun CameraScreen(
@@ -41,6 +49,59 @@ fun CameraScreen(
     onCapture: () -> Unit,
     onOpenThemes: () -> Unit = {}
 ) {
+    var showFlash by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val audioManager = remember {
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
+
+    val soundPool = remember {
+        SoundPool.Builder()
+            .setMaxStreams(1)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            .build()
+    }
+    var shutterSoundId by remember { mutableStateOf(0) }
+
+    DisposableEffect(Unit) {
+        shutterSoundId = soundPool.load(context, R.raw.shutter_click, 1)
+        onDispose { soundPool.release() }
+    }
+
+    fun playShutterSound() {
+        // Volume matches the phone's current media volume (0f-1f), so it
+        // naturally follows the volume rocker - turn media volume down and
+        // the shutter gets quieter, mute it ,and it's silent, same as any
+        // normal app sound.
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val volumeRatio = if (maxVolume > 0) currentVolume.toFloat() / maxVolume else 0f
+        if (volumeRatio > 0f && shutterSoundId != 0) {
+            soundPool.play(shutterSoundId, volumeRatio, volumeRatio, 1, 0, 1f)
+        }
+    }
+
+    // Shutter flash: fade in fast, then trigger the capture callback, fade out.
+    val flashAlpha by animateFloatAsState(
+        targetValue = if (showFlash) 0.85f else 0f,
+        animationSpec = tween(durationMillis = if (showFlash) 80 else 220),
+        label = "shutterFlash"
+    )
+
+    LaunchedEffect(showFlash) {
+        if (showFlash) {
+            delay(220)
+            showFlash = false
+            onCapture()
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -95,7 +156,13 @@ fun CameraScreen(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 56.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                CaptureButton(theme = theme, onTap = onCapture)
+                CaptureButton(
+                    theme = theme,
+                    onTap = {
+                        playShutterSound()
+                        showFlash = true
+                    }
+                )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = "TAP TO IDENTIFY",
@@ -105,65 +172,113 @@ fun CameraScreen(
                 )
             }
         }
+
+        if (flashAlpha > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = flashAlpha))
+            )
+        }
     }
 }
 
-/** Four static corner brackets - pulsing animation added in Commit 3. */
+/** Four pulsing corner brackets - fades between 0.5 and 1.0 alpha on a loop. */
 @Composable
 private fun ViewfinderCorners(accentColor: Color) {
+    val transition = rememberInfiniteTransition(label = "cornerPulse")
+    val alpha by transition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "cornerAlpha"
+    )
+
     val cornerSize = 32.dp
     val strokeWidth = 3.dp
+    val color = accentColor.copy(alpha = alpha)
 
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             Modifier.align(Alignment.TopStart).size(cornerSize)
                 .border(
-                    androidx.compose.foundation.BorderStroke(strokeWidth, accentColor),
+                    androidx.compose.foundation.BorderStroke(strokeWidth, color),
                     RoundedCornerShape(topStart = 8.dp)
                 )
         )
         Box(
             Modifier.align(Alignment.TopEnd).size(cornerSize)
                 .border(
-                    androidx.compose.foundation.BorderStroke(strokeWidth, accentColor),
+                    androidx.compose.foundation.BorderStroke(strokeWidth, color),
                     RoundedCornerShape(topEnd = 8.dp)
                 )
         )
         Box(
             Modifier.align(Alignment.BottomStart).size(cornerSize)
                 .border(
-                    androidx.compose.foundation.BorderStroke(strokeWidth, accentColor),
+                    androidx.compose.foundation.BorderStroke(strokeWidth, color),
                     RoundedCornerShape(bottomStart = 8.dp)
                 )
         )
         Box(
             Modifier.align(Alignment.BottomEnd).size(cornerSize)
                 .border(
-                    androidx.compose.foundation.BorderStroke(strokeWidth, accentColor),
+                    androidx.compose.foundation.BorderStroke(strokeWidth, color),
                     RoundedCornerShape(bottomEnd = 8.dp)
                 )
         )
     }
 }
 
-/** Static capture button - expanding ring pulse added in Commit 3. */
+/** Capture button with an expanding/fading ring pulsing behind it. */
 @Composable
 private fun CaptureButton(theme: Theme, onTap: () -> Unit) {
     val tokens = accentTokens(theme.accent)
+    val transition = rememberInfiniteTransition(label = "ringExpand")
 
-    Box(
-        modifier = Modifier
-            .size(80.dp)
-            .clip(RoundedCornerShape(50))
-            .background(Brush.linearGradient(listOf(theme.accent, tokens.dim)))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onTap
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(text = "?", color = Color.White, fontSize = 30.sp)
+    val ringScale by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.7f,
+        animationSpec = infiniteRepeatable(animation = tween(1500, easing = LinearOutSlowInEasing)),
+        label = "ringScale"
+    )
+    val ringAlpha by transition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(animation = tween(1500, easing = LinearOutSlowInEasing)),
+        label = "ringAlpha"
+    )
+
+    Box(contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .size(80.dp)
+                .graphicsLayer {
+                    scaleX = ringScale
+                    scaleY = ringScale
+                    alpha = ringAlpha
+                    compositingStrategy = CompositingStrategy.Offscreen
+                }
+                .border(2.dp, theme.accent, RoundedCornerShape(50))
+        )
+
+        Box(
+            modifier = Modifier
+                .size(80.dp)
+                .clip(RoundedCornerShape(50))
+                .background(Brush.linearGradient(listOf(theme.accent, tokens.dim)))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onTap
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(text = "?", color = Color.White, fontSize = 30.sp)
+        }
     }
 }
 
@@ -186,10 +301,7 @@ private fun TopBar(theme: Theme, onOpenThemes: () -> Unit) {
     }
 }
 
-/**
- * Visual-only for now (Commit 2) - onClick fires but there's no sheet to open
- * yet. Commit 3 wires this up to the real ThemePickerSheet.
- */
+/** Opens the theme picker bottom sheet (wired in MainActivity via onOpenThemes). */
 @Composable
 internal fun ThemeButton(theme: Theme, onClick: () -> Unit) {
     Box(

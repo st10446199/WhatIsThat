@@ -7,6 +7,7 @@
 
 package com.mohammedanaspatel.whatisthat.ui.screens
 
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -14,13 +15,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -29,18 +31,29 @@ import com.mohammedanaspatel.whatisthat.ui.theme.Theme
 import kotlinx.coroutines.delay
 
 /**
- * Scanning screen - static version (Commit 2). Just waits and shows a
- * "thinking" message. The sweeping scan-line animation is added in Commit 3.
+ * Scanning screen - now with a sweeping scan-line animation (Commit 3),
+ * moving top-to-bottom on a 1.5s loop.
  */
 @Composable
-fun ScanningScreen(theme: Theme, onScanComplete: () -> Unit) {
+fun ScanningScreen(theme: Theme, onScanComplete: () -> Unit, onOpenThemes: () -> Unit = {}) {
     LaunchedEffect(Unit) {
         delay(1200) // matches the ~1.2s "thinking" delay in the Figma design
         onScanComplete()
     }
 
+    val transition = rememberInfiniteTransition(label = "scanLine")
+    val lineY by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "lineY"
+    )
+
     Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
-        ScreenTopBar(theme = theme)
+        ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
 
         Column(
             modifier = Modifier
@@ -49,8 +62,9 @@ fun ScanningScreen(theme: Theme, onScanComplete: () -> Unit) {
                 .padding(horizontal = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Viewfinder box - same size as the Camera screen's, with a static
-            // horizontal line through the middle (sweep animation in Commit 3)
+            // Viewfinder box - same size as the Camera screen's, with the
+            // scan line sweeping from top to bottom on a loop
+            var boxHeightPx by remember { mutableStateOf(0) }
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -58,12 +72,15 @@ fun ScanningScreen(theme: Theme, onScanComplete: () -> Unit) {
                     .clip(RoundedCornerShape(16.dp))
                     .border(1.dp, theme.border, RoundedCornerShape(16.dp))
                     .background(theme.surface)
+                    .onGloballyPositioned { boxHeightPx = it.size.height }
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(3.dp)
-                        .align(Alignment.Center)
+                        .graphicsLayer {
+                            translationY = boxHeightPx * lineY
+                        }
                         .background(
                             Brush.horizontalGradient(
                                 listOf(Color.Transparent, theme.accent, Color.Transparent)
@@ -100,14 +117,36 @@ fun ScanningScreen(theme: Theme, onScanComplete: () -> Unit) {
 }
 
 /**
- * Result screen - static version (Commit 2). "it's a [Object]!" reveal,
- * matching the app's name/voice. No bounce-in animation yet (Commit 3),
- * photo placeholder instead of the real captured frame (Commit 4).
+ * Result screen - now with a spring bounce-in on appear (Commit 3).
+ * "it's a [Object]!" reveal, matching the app's name/voice. Photo placeholder
+ * instead of the real captured frame (Commit 4).
  */
 @Composable
-fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
-        ScreenTopBar(theme = theme)
+fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit, onOpenThemes: () -> Unit = {}) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(result) { visible = true }
+    val scale by animateFloatAsState(
+        targetValue = if (visible) 1f else 0.8f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "resultBounce"
+    )
+    val contentAlpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(300),
+        label = "resultFadeIn"
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(theme.bg)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                alpha = contentAlpha
+            }
+    ) {
+        ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
 
         // Placeholder for the captured photo - Commit 4 swaps this for the real frame
         Box(
@@ -229,13 +268,24 @@ fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit) {
 }
 
 /**
- * Stumped screen - static version (Commit 2). Playful, in-character copy
- * instead of a generic error message. Wobble animation added in Commit 3.
+ * Stumped screen - now with a wobbling 🤔 emoji (Commit 3). Playful,
+ * in-character copy instead of a generic error message.
  */
 @Composable
-fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit) {
+fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit = {}) {
+    val transition = rememberInfiniteTransition(label = "wobble")
+    val rotation by transition.animateFloat(
+        initialValue = -8f,
+        targetValue = 8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "wobbleRotation"
+    )
+
     Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
-        ScreenTopBar(theme = theme)
+        ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
 
         // Placeholder box matching the photo-frame area on other screens
         Box(
@@ -248,7 +298,11 @@ fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit) {
                 .background(theme.surface),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = "🤔", fontSize = 56.sp)
+            Text(
+                text = "🤔",
+                fontSize = 56.sp,
+                modifier = Modifier.graphicsLayer { rotationZ = rotation }
+            )
         }
 
         Column(
@@ -326,7 +380,7 @@ private fun TipRow(emoji: String, text: String, theme: Theme) {
  * bar consistently at the top no matter which screen you're on.
  */
 @Composable
-private fun ScreenTopBar(theme: Theme) {
+private fun ScreenTopBar(theme: Theme, onOpenThemes: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -337,7 +391,7 @@ private fun ScreenTopBar(theme: Theme) {
     ) {
         Wordmark(theme = theme)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            ThemeButton(theme = theme, onClick = {})
+            ThemeButton(theme = theme, onClick = onOpenThemes)
             Spacer(modifier = Modifier.width(8.dp))
             OfflineBadge(theme = theme)
         }

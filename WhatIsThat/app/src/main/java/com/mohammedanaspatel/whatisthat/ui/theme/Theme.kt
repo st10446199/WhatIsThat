@@ -38,6 +38,55 @@ data class AccentTokens(
     val border: Color
 )
 
+/**
+ * Builds a complete Theme from just two user-picked colors (background + accent).
+ * Surface/card/text/etc. are all derived automatically so a custom theme still
+ * looks coherent - the user only has to pick 2 colors, not 12.
+ */
+fun buildCustomTheme(bg: Color, accent: Color): Theme {
+    // Perceived luminance (standard formula) decides if this counts as a dark theme
+    val luminance = 0.299f * bg.red + 0.587f * bg.green + 0.114f * bg.blue
+    val isDark = luminance < 0.5f
+
+    // Lighten a color toward white, or darken toward black, by a given amount
+    fun lighten(c: Color, amount: Float) = Color(
+        red = c.red + (1f - c.red) * amount,
+        green = c.green + (1f - c.green) * amount,
+        blue = c.blue + (1f - c.blue) * amount,
+        alpha = 1f
+    )
+    fun darken(c: Color, amount: Float) = Color(
+        red = c.red * (1f - amount),
+        green = c.green * (1f - amount),
+        blue = c.blue * (1f - amount),
+        alpha = 1f
+    )
+
+    val surface = if (isDark) lighten(bg, 0.08f) else darken(bg, 0.05f)
+    val card = if (isDark) lighten(bg, 0.14f) else Color.White
+    val border = if (isDark) lighten(bg, 0.20f) else darken(bg, 0.12f)
+    val borderSubtle = if (isDark) lighten(bg, 0.12f) else darken(bg, 0.08f)
+    val text = if (isDark) Color(0xFFF5F5F5) else Color(0xFF141414)
+    val textSecondary = if (isDark) Color(0xFFB0B0B0) else Color(0xFF505050)
+    val textMuted = if (isDark) Color(0xFF757575) else Color(0xFF8A8A8A)
+
+    return Theme(
+        id = "custom",
+        displayName = "Custom",
+        emoji = "🎨",
+        isDark = isDark,
+        bg = bg,
+        surface = surface,
+        card = card,
+        border = border,
+        borderSubtle = borderSubtle,
+        text = text,
+        textSecondary = textSecondary,
+        textMuted = textMuted,
+        accent = accent
+    )
+}
+
 fun accentTokens(accent: Color): AccentTokens {
     val dim = Color(
         red = accent.red * 0.78f,
