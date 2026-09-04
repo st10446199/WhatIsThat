@@ -61,6 +61,7 @@ fun ThemePickerSheet(
 ) {
     val sheetState = rememberModalBottomSheetState()
     var selectedTab by remember { mutableStateOf(0) }
+    val playTap = rememberTapSound()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -83,12 +84,12 @@ fun ThemePickerSheet(
             ) {
                 Tab(
                     selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
+                    onClick = { playTap(); selectedTab = 0 },
                     text = { Text("Presets", color = if (selectedTab == 0) currentTheme.accent else currentTheme.textMuted) }
                 )
                 Tab(
                     selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
+                    onClick = { playTap(); selectedTab = 1 },
                     text = { Text("Custom", color = if (selectedTab == 1) currentTheme.accent else currentTheme.textMuted) }
                 )
             }
@@ -96,9 +97,15 @@ fun ThemePickerSheet(
             Spacer(modifier = Modifier.height(20.dp))
 
             if (selectedTab == 0) {
-                PresetsGrid(currentTheme = currentTheme, onThemeSelected = onThemeSelected)
+                PresetsGrid(
+                    currentTheme = currentTheme,
+                    onThemeSelected = { playTap(); onThemeSelected(it) }
+                )
             } else {
-                CustomThemeEditor(currentTheme = currentTheme, onThemeSelected = onThemeSelected)
+                CustomThemeEditor(
+                    currentTheme = currentTheme,
+                    onThemeSelected = { playTap(); onThemeSelected(it) }
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))

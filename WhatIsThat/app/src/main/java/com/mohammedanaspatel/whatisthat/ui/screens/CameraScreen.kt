@@ -7,41 +7,66 @@
 
 package com.mohammedanaspatel.whatisthat.ui.screens
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.SoundPool
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import com.mohammedanaspatel.whatisthat.R
 import com.mohammedanaspatel.whatisthat.ui.theme.Theme
 import com.mohammedanaspatel.whatisthat.ui.theme.accentTokens
 import kotlinx.coroutines.delay
+import java.util.concurrent.TimeUnit
 
 /**
- * Camera screen - now with animations (Commit 3): pulsing corner brackets,
- * expanding ring behind the capture button, a shutter flash on tap, and a
- * shutter click sound played through SoundPool at the phone's actual media
- * volume (res/raw/shutter_click.wav) - simpler and more predictable than
- * MediaActionSound, which is intentionally hard for apps to control.
- * Theme button now wired to open the real ThemePickerSheet via onOpenThemes.
+ * Camera screen - now with a real, live CameraX feed (Commit 4), on top of
+ * the animations and sound from Commit 3: pulsing corner brackets, expanding
+ * ring behind the capture button, a shutter flash + click sound on tap.
+ * Theme button opens the real ThemePickerSheet via onOpenThemes.
+ *
+ * Camera permission is requested the first time this screen appears. If the
+ * person denies it, a fallback message with a "Grant Permission" button is
+ * shown instead of the live feed - the rest of the screen (theme button,
+ * offline badge, etc.) still works normally either way.
  */
 @Composable
 fun CameraScreen(
@@ -51,7 +76,29 @@ fun CameraScreen(
 ) {
     var showFlash by remember { mutableStateOf(false) }
 
+    // --- Camera permission handling ---
+    // Check current permission state once, then offer a launcher that shows
+    // the system permission dialog. hasCameraPermission drives whether we
+    // show the live feed or the fallback "please grant permission" message.
     val context = LocalContext.current
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> hasCameraPermission = granted }
+
+    // Ask for permission once, the first time this screen is shown, if we
+    // don't already have it.
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
     val audioManager = remember {
         context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     }
@@ -77,7 +124,7 @@ fun CameraScreen(
     fun playShutterSound() {
         // Volume matches the phone's current media volume (0f-1f), so it
         // naturally follows the volume rocker - turn media volume down and
-        // the shutter gets quieter, mute it ,and it's silent, same as any
+        // the shutter gets quieter, mute it and it's silent, same as any
         // normal app sound.
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -117,7 +164,8 @@ fun CameraScreen(
                     .padding(horizontal = 32.dp),
                 contentAlignment = Alignment.Center
             ) {
-                // Viewfinder frame - TODO: swap for CameraX PreviewView in Commit 4
+                // Viewfinder frame: shows the live CameraX feed once permission is
+                // granted, or a fallback message with a retry button if not.
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -126,20 +174,13 @@ fun CameraScreen(
                         .background(if (theme.isDark) Color(0xFF141420) else Color(0xFFE8DDD8)),
                     contentAlignment = Alignment.Center
                 ) {
-                    // Rotated square placeholder representing "an object to detect"
-                    Box(
-                        modifier = Modifier
-                            .size(70.dp)
-                            .graphicsLayer { rotationZ = 45f }
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(theme.surface)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(RoundedCornerShape(50))
-                            .background(theme.accent)
-                    )
+                    if (hasCameraPermission) {
+                        CameraPreview(modifier = Modifier.fillMaxSize())
+                    } else {
+                        PermissionFallback(theme = theme) {
+                            permissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    }
                 }
 
                 ViewfinderCorners(accentColor = theme.accent)
@@ -179,6 +220,195 @@ fun CameraScreen(
                     .fillMaxSize()
                     .background(Color.White.copy(alpha = flashAlpha))
             )
+        }
+    }
+}
+
+/**
+ * Wraps CameraX's PreviewView (a regular Android View) so it can be used
+ * inside Compose. This is the standard "AndroidView" bridge pattern -
+ * Compose doesn't have its own camera preview widget, so we host the
+ * View-based one from CameraX directly.
+ *
+ * What happens here:
+ * 1. Create a PreviewView (the actual View that renders camera frames).
+ * 2. Get a ProcessCameraProvider - CameraX's entry point, tied to the app's
+ *    process rather than a single Activity.
+ * 3. Build a Preview use case and point its output at our PreviewView.
+ * 4. Bind everything to this screen's lifecycle, so the camera automatically
+ *    starts/stops as the screen appears/disappears - no manual start/stop
+ *    calls needed, CameraX handles it via the lifecycle owner.
+ *
+ * Also wires up 3 standard camera interactions:
+ * - Tap-to-focus: taps create a CameraX "metering point" at that spot and
+ *   ask the camera to focus/expose there. A ring shows where you tapped.
+ * - Reset focus: a small pill button appears after a manual focus, letting
+ *   you cancel it and return to normal continuous autofocus.
+ * - Pinch-to-zoom: a standard two-finger pinch gesture reads the camera's
+ *   supported zoom range and moves within it smoothly.
+ */
+@Composable
+private fun CameraPreview(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Holds the bound Camera once CameraX finishes setup - this is what lets
+    // us call focus/zoom controls later, since those live on the Camera
+    // object CameraX hands back from bindToLifecycle(), not on PreviewView.
+    var camera by remember { mutableStateOf<Camera?>(null) }
+    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+
+    // Where the user last tapped to focus, in pixels relative to the preview.
+    // Null means "no manual focus point right now" - normal continuous
+    // autofocus is running instead.
+    var focusPoint by remember { mutableStateOf<Offset?>(null) }
+    var currentZoomRatio by remember { mutableStateOf(1f) }
+
+    Box(modifier = modifier) {
+        AndroidView(
+            modifier = Modifier
+                .fillMaxSize()
+                // Tap-to-focus: converts the tap position into a CameraX
+                // MeteringPoint and asks the camera to focus/expose there.
+                .pointerInput(camera) {
+                    detectTapGestures { offset ->
+                        val view = previewView ?: return@detectTapGestures
+                        val cam = camera ?: return@detectTapGestures
+
+                        val meteringPoint = view.meteringPointFactory.createPoint(offset.x, offset.y)
+                        val action = FocusMeteringAction.Builder(
+                            meteringPoint,
+                            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+                        )
+                            // Auto-cancels back to continuous autofocus after
+                            // 5s if the person doesn't tap "Reset Focus" first
+                            .setAutoCancelDuration(5, TimeUnit.SECONDS)
+                            .build()
+
+                        cam.cameraControl.startFocusAndMetering(action)
+                        focusPoint = offset
+                    }
+                }
+                // Pinch-to-zoom: reads how much the pinch gesture scaled by,
+                // multiplies it into our running zoom ratio, and clamps it to
+                // whatever range this specific camera/lens actually supports.
+                .pointerInput(camera) {
+                    detectTransformGestures { _, _, gestureZoom, _ ->
+                        val cam = camera ?: return@detectTransformGestures
+                        val zoomState = cam.cameraInfo.zoomState.value ?: return@detectTransformGestures
+
+                        val newZoomRatio = (currentZoomRatio * gestureZoom)
+                            .coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
+
+                        currentZoomRatio = newZoomRatio
+                        cam.cameraControl.setZoomRatio(newZoomRatio)
+                    }
+                },
+            factory = { ctx ->
+                val view = PreviewView(ctx)
+                previewView = view
+                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+
+                cameraProviderFuture.addListener({
+                    val cameraProvider = cameraProviderFuture.get()
+
+                    // Preview use case: streams live camera frames into previewView
+                    val preview = Preview.Builder().build().also {
+                        it.setSurfaceProvider(view.surfaceProvider)
+                    }
+
+                    val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+                    try {
+                        // unbindAll() first, since re-binding without it throws if
+                        // this screen's Composable re-runs (e.g. on theme change)
+                        cameraProvider.unbindAll()
+                        camera = cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview)
+                    } catch (e: Exception) {
+                        // Binding can fail if the camera is already in use by
+                        // another app, or the device has no back camera. There's
+                        // nothing actionable to do here yet - Commit 5 will add
+                        // proper error handling when we wire up real inference.
+                    }
+                }, ContextCompat.getMainExecutor(ctx))
+
+                view
+            }
+        )
+
+        // Focus ring - shows exactly where the last tap-to-focus happened
+        focusPoint?.let { point ->
+            FocusRing(offsetPx = point)
+        }
+
+        // "Reset Focus" pill - only shown while a manual focus point is active
+        if (focusPoint != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 12.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {
+                            camera?.cameraControl?.cancelFocusAndMetering()
+                            focusPoint = null
+                        }
+                    )
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Text(text = "Reset Focus", color = Color.White, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+/** A simple ring drawn at the last tap-to-focus point, in pixel coordinates. */
+@Composable
+private fun FocusRing(offsetPx: Offset) {
+    val density = LocalDensity.current
+    val xDp = with(density) { offsetPx.x.toDp() }
+    val yDp = with(density) { offsetPx.y.toDp() }
+    val ringSize = 56.dp
+
+    Box(
+        modifier = Modifier
+            .offset(x = xDp - ringSize / 2, y = yDp - ringSize / 2)
+            .size(ringSize)
+            .border(2.dp, Color.White, RoundedCornerShape(50))
+    )
+}
+
+/** Shown instead of the camera feed if permission hasn't been granted (yet). */
+@Composable
+private fun PermissionFallback(theme: Theme, onRequestPermission: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.padding(24.dp)
+    ) {
+        Text(
+            text = "Camera access needed",
+            color = theme.text,
+            fontSize = 15.sp
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "WhatIsThat needs your camera to identify objects.",
+            color = theme.textMuted,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(14.dp))
+        Button(
+            onClick = onRequestPermission,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = theme.accent,
+                contentColor = Color.White
+            )
+        ) {
+            Text("Grant Permission")
         }
     }
 }

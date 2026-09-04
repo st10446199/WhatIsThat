@@ -123,6 +123,7 @@ fun ScanningScreen(theme: Theme, onScanComplete: () -> Unit, onOpenThemes: () ->
  */
 @Composable
 fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit, onOpenThemes: () -> Unit = {}) {
+    val playTap = rememberTapSound()
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(result) { visible = true }
     val scale by animateFloatAsState(
@@ -254,7 +255,10 @@ fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit, onOp
 
             Spacer(modifier = Modifier.height(20.dp))
             Button(
-                onClick = onScanAgain,
+                onClick = {
+                    playTap()
+                    onScanAgain()
+                },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = theme.accent,
@@ -273,6 +277,7 @@ fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit, onOp
  */
 @Composable
 fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit = {}) {
+    val playTap = rememberTapSound()
     val transition = rememberInfiniteTransition(label = "wobble")
     val rotation by transition.animateFloat(
         initialValue = -8f,
@@ -352,7 +357,10 @@ fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit
 
             Spacer(modifier = Modifier.height(20.dp))
             Button(
-                onClick = onTryAgain,
+                onClick = {
+                    playTap()
+                    onTryAgain()
+                },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = theme.accent,
