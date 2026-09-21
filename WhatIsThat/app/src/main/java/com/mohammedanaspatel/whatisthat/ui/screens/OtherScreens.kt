@@ -7,6 +7,7 @@
 
 package com.mohammedanaspatel.whatisthat.ui.screens
 
+import android.graphics.Bitmap
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,24 +22,60 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.mohammedanaspatel.whatisthat.data.CONFIDENCE_THRESHOLD
 import com.mohammedanaspatel.whatisthat.data.ScanResult
+import com.mohammedanaspatel.whatisthat.ml.Classifier
 import com.mohammedanaspatel.whatisthat.ui.theme.Theme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
- * Scanning screen - now with a sweeping scan-line animation (Commit 3),
- * moving top-to-bottom on a 1.5s loop.
+ * Scanning screen - now runs real TFLite inference (Commit 5) on the photo
+ * captured from CameraScreen, on top of the sweeping scan-line animation
+ * from Commit 3.
+ *
+ * The classifier runs on a background dispatcher (Dispatchers.Default) since
+ * inference is CPU-heavy and would freeze the UI if run on the main thread.
+ * A minimum 1200ms display time is enforced regardless of how fast inference
+ * actually finishes, so the animation always gets to play out fully rather
+ * than flashing by in a few milliseconds on a fast device.
+ *
+ * onResult receives the real ScanResult, or null if confidence came back
+ * below CONFIDENCE_THRESHOLD - the parent (MainActivity) routes null to the
+ * Stumped screen and everything else to the Result screen.
  */
 @Composable
-fun ScanningScreen(theme: Theme, onScanComplete: () -> Unit, onOpenThemes: () -> Unit = {}) {
-    LaunchedEffect(Unit) {
-        delay(1200) // matches the ~1.2s "thinking" delay in the Figma design
-        onScanComplete()
+fun ScanningScreen(
+    theme: Theme,
+    bitmap: Bitmap,
+    classifier: Classifier,
+    onResult: (ScanResult?) -> Unit,
+    onOpenThemes: () -> Unit = {}
+) {
+    LaunchedEffect(bitmap) {
+        val minimumDisplayTime = launch { delay(1200) }
+
+        val prediction = withContext(Dispatchers.Default) {
+            classifier.classify(bitmap)
+        }
+
+        minimumDisplayTime.join()
+
+        val result = if (prediction != null && prediction.second >= CONFIDENCE_THRESHOLD) {
+            ScanResult(label = prediction.first, confidencePercent = prediction.second, emoji = "🔍")
+        } else {
+            null
+        }
+        onResult(result)
     }
 
     val transition = rememberInfiniteTransition(label = "scanLine")
@@ -117,12 +154,19 @@ fun ScanningScreen(theme: Theme, onScanComplete: () -> Unit, onOpenThemes: () ->
 }
 
 /**
- * Result screen - now with a spring bounce-in on appear (Commit 3).
- * "it's a [Object]!" reveal, matching the app's name/voice. Photo placeholder
- * instead of the real captured frame (Commit 4).
+ * Result screen - now shows the actual captured photo (Commit 5), replacing
+ * the emoji placeholder from Commit 4, on top of the spring bounce-in from
+ * Commit 3. Falls back to the emoji if no bitmap is available (e.g. the
+ * @Preview functions below, which don't have a real captured photo).
  */
 @Composable
-fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit, onOpenThemes: () -> Unit = {}) {
+fun ResultScreen(
+    theme: Theme,
+    result: ScanResult,
+    capturedBitmap: Bitmap? = null,
+    onScanAgain: () -> Unit,
+    onOpenThemes: () -> Unit = {}
+) {
     val playTap = rememberTapSound()
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(result) { visible = true }
@@ -149,7 +193,7 @@ fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit, onOp
     ) {
         ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
 
-        // Placeholder for the captured photo - Commit 4 swaps this for the real frame
+        // The actual captured photo, or the emoji fallback if none was passed
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -160,7 +204,18 @@ fun ResultScreen(theme: Theme, result: ScanResult, onScanAgain: () -> Unit, onOp
                 .background(theme.surface),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = result.emoji, fontSize = 64.sp)
+            if (capturedBitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = capturedBitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(16.dp)),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Text(text = result.emoji, fontSize = 64.sp)
+            }
 
             // "IDENTIFIED" badge, top-right
             Box(
@@ -408,11 +463,10 @@ private fun ScreenTopBar(theme: Theme, onOpenThemes: () -> Unit) {
 
 private val previewTheme = com.mohammedanaspatel.whatisthat.ui.theme.PRESETS.first { it.id == "obsidian" }
 
-@androidx.compose.ui.tooling.preview.Preview(showBackground = true)
-@Composable
-private fun ScanningScreenPreview() {
-    ScanningScreen(theme = previewTheme, onScanComplete = {})
-}
+// Note: no @Preview for ScanningScreen - it now requires a real, loaded
+// Classifier (which loads a .tflite model file at construction time), so
+// it can't be meaningfully previewed without a device/emulator running the
+// full app. Test this screen by actually running the app instead.
 
 @androidx.compose.ui.tooling.preview.Preview(showBackground = true)
 @Composable

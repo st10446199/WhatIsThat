@@ -10,6 +10,9 @@ package com.mohammedanaspatel.whatisthat.ui.screens
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.SoundPool
@@ -18,10 +21,19 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,11 +53,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -58,20 +73,43 @@ import kotlinx.coroutines.delay
 import java.util.concurrent.TimeUnit
 
 /**
- * Camera screen - now with a real, live CameraX feed (Commit 4), on top of
- * the animations and sound from Commit 3: pulsing corner brackets, expanding
- * ring behind the capture button, a shutter flash + click sound on tap.
- * Theme button opens the real ThemePickerSheet via onOpenThemes.
+ * Converts a captured JPEG ImageProxy (from ImageCapture's in-memory
+ * callback) into a correctly-oriented Bitmap. Camera sensors are physically
+ * mounted at a fixed rotation, so the raw image data often needs rotating to
+ * match what the person actually saw on screen - imageInfo.rotationDegrees
+ * tells us exactly how much.
+ */
+private fun ImageProxy.toRotatedBitmapOrNull(): Bitmap? {
+    val buffer = planes[0].buffer
+    val bytes = ByteArray(buffer.remaining())
+    buffer.get(bytes)
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+
+    val rotationDegrees = imageInfo.rotationDegrees
+    if (rotationDegrees == 0) return bitmap
+
+    val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+}
+
+/**
+ * Camera screen - now captures a real photo and hands it off for actual
+ * TFLite inference (Commit 5), on top of the live CameraX feed (Commit 4)
+ * and animations/sound from Commit 3.
  *
  * Camera permission is requested the first time this screen appears. If the
  * person denies it, a fallback message with a "Grant Permission" button is
  * shown instead of the live feed - the rest of the screen (theme button,
  * offline badge, etc.) still works normally either way.
+ *
+ * onCaptured now delivers the actual captured Bitmap (instead of just a
+ * "tapped" signal) - the parent (MainActivity) passes this along to
+ * ScanningScreen, which runs it through the real Classifier.
  */
 @Composable
 fun CameraScreen(
     theme: Theme,
-    onCapture: () -> Unit,
+    onCaptured: (Bitmap) -> Unit,
     onOpenThemes: () -> Unit = {}
 ) {
     var showFlash by remember { mutableStateOf(false) }
@@ -145,9 +183,12 @@ fun CameraScreen(
         if (showFlash) {
             delay(220)
             showFlash = false
-            onCapture()
         }
     }
+
+    // Holds the CameraX ImageCapture use case once CameraPreview finishes
+    // binding it - this is what actually takes a real photo on tap.
+    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
 
     Box(
         modifier = Modifier
@@ -175,7 +216,10 @@ fun CameraScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     if (hasCameraPermission) {
-                        CameraPreview(modifier = Modifier.fillMaxSize())
+                        CameraPreview(
+                            modifier = Modifier.fillMaxSize(),
+                            onImageCaptureReady = { imageCapture = it }
+                        )
                     } else {
                         PermissionFallback(theme = theme) {
                             permissionLauncher.launch(Manifest.permission.CAMERA)
@@ -202,6 +246,30 @@ fun CameraScreen(
                     onTap = {
                         playShutterSound()
                         showFlash = true
+
+                        // Take an actual photo via CameraX's ImageCapture use
+                        // case. The result arrives asynchronously in the
+                        // callback below - we convert it to a Bitmap and hand
+                        // it up to the parent, which routes it to
+                        // ScanningScreen for real classification.
+                        imageCapture?.takePicture(
+                            ContextCompat.getMainExecutor(context),
+                            object : ImageCapture.OnImageCapturedCallback() {
+                                override fun onCaptureSuccess(image: ImageProxy) {
+                                    val bitmap = image.toRotatedBitmapOrNull()
+                                    image.close()
+                                    if (bitmap != null) {
+                                        onCaptured(bitmap)
+                                    }
+                                }
+
+                                override fun onError(exception: ImageCaptureException) {
+                                    // Capture failed (camera busy, etc.) - nothing
+                                    // actionable here yet; a production app would
+                                    // show an error state instead of doing nothing.
+                                }
+                            }
+                        )
                     }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -248,7 +316,10 @@ fun CameraScreen(
  *   supported zoom range and moves within it smoothly.
  */
 @Composable
-private fun CameraPreview(modifier: Modifier = Modifier) {
+private fun CameraPreview(
+    modifier: Modifier = Modifier,
+    onImageCaptureReady: (ImageCapture) -> Unit = {}
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -263,6 +334,20 @@ private fun CameraPreview(modifier: Modifier = Modifier) {
     // autofocus is running instead.
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var currentZoomRatio by remember { mutableStateOf(1f) }
+    var zoomBounds by remember { mutableStateOf(1f..1f) }
+    var zoomChangeKey by remember { mutableStateOf(0) }
+    var showZoomIndicator by remember { mutableStateOf(false) }
+
+    // Hides the zoom indicator ~1s after the last pinch update - restarting
+    // this effect on every zoomChangeKey bump is what makes it "debounce":
+    // each new pinch event cancels the previous hide-timer and starts a new one.
+    LaunchedEffect(zoomChangeKey) {
+        if (zoomChangeKey > 0) {
+            showZoomIndicator = true
+            delay(1000)
+            showZoomIndicator = false
+        }
+    }
 
     Box(modifier = modifier) {
         AndroidView(
@@ -301,6 +386,8 @@ private fun CameraPreview(modifier: Modifier = Modifier) {
                             .coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
 
                         currentZoomRatio = newZoomRatio
+                        zoomBounds = zoomState.minZoomRatio..zoomState.maxZoomRatio
+                        zoomChangeKey++
                         cam.cameraControl.setZoomRatio(newZoomRatio)
                     }
                 },
@@ -317,18 +404,26 @@ private fun CameraPreview(modifier: Modifier = Modifier) {
                         it.setSurfaceProvider(view.surfaceProvider)
                     }
 
+                    // ImageCapture use case: this is what actually grabs a
+                    // full-resolution still photo when the capture button is
+                    // tapped - separate from the live preview stream.
+                    val imageCapture = ImageCapture.Builder().build()
+
                     val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
                     try {
                         // unbindAll() first, since re-binding without it throws if
                         // this screen's Composable re-runs (e.g. on theme change)
                         cameraProvider.unbindAll()
-                        camera = cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview)
+                        camera = cameraProvider.bindToLifecycle(
+                            lifecycleOwner, cameraSelector, preview, imageCapture
+                        )
+                        onImageCaptureReady(imageCapture)
                     } catch (e: Exception) {
                         // Binding can fail if the camera is already in use by
                         // another app, or the device has no back camera. There's
-                        // nothing actionable to do here yet - Commit 5 will add
-                        // proper error handling when we wire up real inference.
+                        // nothing actionable to do here yet - a production app
+                        // would show an error state here.
                     }
                 }, ContextCompat.getMainExecutor(ctx))
 
@@ -362,6 +457,17 @@ private fun CameraPreview(modifier: Modifier = Modifier) {
                 Text(text = "Reset Focus", color = Color.White, fontSize = 12.sp)
             }
         }
+
+        // Zoom indicator - a radial ring gauge (like a premium camera app),
+        // fills up as you zoom in, fades out ~1s after you stop pinching.
+        AnimatedVisibility(
+            visible = showZoomIndicator,
+            enter = fadeIn() + scaleIn(initialScale = 0.85f),
+            exit = fadeOut() + scaleOut(targetScale = 0.85f),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)
+        ) {
+            ZoomIndicator(zoomRatio = currentZoomRatio, bounds = zoomBounds)
+        }
     }
 }
 
@@ -379,6 +485,54 @@ private fun FocusRing(offsetPx: Offset) {
             .size(ringSize)
             .border(2.dp, Color.White, RoundedCornerShape(50))
     )
+}
+
+/**
+ * Premium-style zoom gauge: a dark circular badge with a thin progress ring
+ * around it showing where the current zoom sits between the camera's min
+ * and max, plus a numeric readout in the middle (e.g. "2.3×"). Same visual
+ * language as native camera apps, but built from scratch with Canvas rather
+ * than a system widget.
+ */
+@Composable
+private fun ZoomIndicator(zoomRatio: Float, bounds: ClosedFloatingPointRange<Float>) {
+    val range = (bounds.endInclusive - bounds.start).coerceAtLeast(0.01f)
+    val fraction = ((zoomRatio - bounds.start) / range).coerceIn(0f, 1f)
+    val badgeSize = 64.dp
+
+    Box(
+        modifier = Modifier
+            .size(badgeSize)
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = 0.55f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.matchParentSize().padding(4.dp)) {
+            val strokeWidth = 3.dp.toPx()
+            // Background track - full circle, low opacity
+            drawArc(
+                color = Color.White.copy(alpha = 0.25f),
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+            // Progress arc - fills clockwise from the top based on zoom fraction
+            drawArc(
+                color = Color.White,
+                startAngle = -90f,
+                sweepAngle = 360f * fraction,
+                useCenter = false,
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+        }
+        Text(
+            text = String.format("%.1f×", zoomRatio),
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
 }
 
 /** Shown instead of the camera feed if permission hasn't been granted (yet). */
@@ -587,6 +741,6 @@ internal fun OfflineBadge(theme: Theme) {
 private fun CameraScreenPreview() {
     CameraScreen(
         theme = com.mohammedanaspatel.whatisthat.ui.theme.PRESETS.first { it.id == "obsidian" },
-        onCapture = {}
+        onCaptured = {}
     )
 }

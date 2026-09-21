@@ -5,11 +5,7 @@ plugins {
 
 android {
     namespace = "com.mohammedanaspatel.whatisthat"
-    compileSdk {
-        version = release(37) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.mohammedanaspatel.whatisthat"
@@ -23,9 +19,7 @@ android {
 
     buildTypes {
         release {
-            optimization {
-                enable = false
-            }
+            isMinifyEnabled = false
         }
     }
     compileOptions {
@@ -44,6 +38,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$camerax_version")
     implementation("androidx.camera:camera-lifecycle:$camerax_version")
     implementation("androidx.camera:camera-view:$camerax_version")
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
