@@ -25,5 +25,9 @@ val SAMPLE_RESULTS = listOf(
 /** Used for Commit 2 static screens - swap for real predictions in Commit 5. */
 val MOCK_RESULT = SAMPLE_RESULTS.first()
 
-/** Confidence threshold below which the app shows the Stumped screen instead. */
-const val CONFIDENCE_THRESHOLD = 60
+/**
+ * MobileNet camera classifications often spread probability across several
+ * related ImageNet labels. Ten percent is enough to reject near-random output
+ * without throwing away useful real-world predictions.
+ */
+const val CONFIDENCE_THRESHOLD = 10
