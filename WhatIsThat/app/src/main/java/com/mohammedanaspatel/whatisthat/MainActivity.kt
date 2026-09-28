@@ -9,6 +9,7 @@ package com.mohammedanaspatel.whatisthat
 
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
@@ -18,12 +19,19 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.mohammedanaspatel.whatisthat.data.ScanResult
 import com.mohammedanaspatel.whatisthat.ml.Classifier
 import com.mohammedanaspatel.whatisthat.ui.screens.CameraScreen
+import com.mohammedanaspatel.whatisthat.ui.screens.ErrorScreen
 import com.mohammedanaspatel.whatisthat.ui.screens.ResultScreen
 import com.mohammedanaspatel.whatisthat.ui.screens.ScanningScreen
 import com.mohammedanaspatel.whatisthat.ui.screens.StumpedScreen
@@ -32,16 +40,20 @@ import com.mohammedanaspatel.whatisthat.ui.theme.PRESETS
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * The 4 screens in the app. Scanning and Result now carry real data along
- * with them (the captured photo, and the photo + real prediction) instead of
- * just being empty markers - this is what changed for Commit 5.
- */
+private const val APP_TAG = "WhatIsThat"
+
 sealed class Screen {
     data object Camera : Screen()
     data class Scanning(val bitmap: Bitmap) : Screen()
-    data class Result(val result: ScanResult, val bitmap: Bitmap?) : Screen()
-    data object Stumped : Screen()
+    data class Result(val result: ScanResult, val bitmap: Bitmap) : Screen()
+    data class Unknown(val bitmap: Bitmap, val confidencePercent: Int?) : Screen()
+    data class Error(val message: String) : Screen()
+}
+
+private sealed class ClassifierState {
+    data object Loading : ClassifierState()
+    data class Ready(val classifier: Classifier) : ClassifierState()
+    data class Error(val message: String) : ClassifierState()
 }
 
 class MainActivity : ComponentActivity() {
@@ -53,20 +65,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Commit 5: real capture -> classify -> route flow.
- *
- * The Classifier is loaded once here (not per-screen) since constructing it
- * reads the model file from disk and builds a TFLite Interpreter - fairly
- * cheap for a small model, but still wasteful to repeat every time the
- * Camera screen re-appears. It's loaded on a background thread so a slow
- * model file doesn't freeze the very first frame the person sees.
- *
- * If the model/labels files are missing (e.g. not yet added to assets/,
- * see the project README), loading fails gracefully - the person can still
- * use the app, they'll just always land on the Stumped screen instead of
- * the app crashing outright.
- */
 @Composable
 fun WhatIsThatApp() {
     var currentTheme by remember { mutableStateOf(PRESETS.first { it.id == "obsidian" }) }
@@ -74,16 +72,21 @@ fun WhatIsThatApp() {
     var showThemePicker by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
-    var classifier by remember { mutableStateOf<Classifier?>(null) }
+    var classifierState by remember { mutableStateOf<ClassifierState>(ClassifierState.Loading) }
+    var classifierLoadAttempt by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
-        classifier = try {
-            withContext(Dispatchers.IO) { Classifier(context) }
-        } catch (e: Exception) {
-            // Model/labels missing or failed to load - null classifier means
-            // every capture falls through to the Stumped screen below,
-            // rather than crashing the whole app.
-            null
+    LaunchedEffect(classifierLoadAttempt) {
+        classifierState = ClassifierState.Loading
+        classifierState = try {
+            val loadedClassifier = withContext(Dispatchers.IO) {
+                Classifier(context.applicationContext)
+            }
+            ClassifierState.Ready(loadedClassifier)
+        } catch (exception: Exception) {
+            Log.e(APP_TAG, "Failed to load local classifier", exception)
+            ClassifierState.Error(
+                "The local AI model could not be loaded. Please try again."
+            )
         }
     }
 
@@ -99,32 +102,53 @@ fun WhatIsThatApp() {
                     onCaptured = { bitmap ->
                         currentScreen = Screen.Scanning(bitmap)
                     },
+                    onCameraError = { message ->
+                        currentScreen = Screen.Error(message)
+                    },
                     onOpenThemes = { showThemePicker = true }
                 )
 
                 is Screen.Scanning -> {
-                    val loadedClassifier = classifier
-                    if (loadedClassifier != null) {
-                        ScanningScreen(
+                    when (val state = classifierState) {
+                        is ClassifierState.Loading -> ScanningScreen(
                             theme = currentTheme,
                             bitmap = screen.bitmap,
-                            classifier = loadedClassifier,
+                            classifier = null,
                             onResult = { result ->
-                                currentScreen = if (result != null) {
-                                    Screen.Result(result, screen.bitmap)
-                                } else {
-                                    Screen.Stumped
-                                }
+                                currentScreen = Screen.Result(result, screen.bitmap)
+                            },
+                            onUnknown = { confidence ->
+                                currentScreen = Screen.Unknown(screen.bitmap, confidence)
+                            },
+                            onError = { message ->
+                                currentScreen = Screen.Error(message)
                             },
                             onOpenThemes = { showThemePicker = true }
                         )
-                    } else {
-                        // Classifier still loading (or failed) - fall back to
-                        // Stumped rather than showing a broken Scanning screen
-                        // that can never finish.
-                        StumpedScreen(
+
+                        is ClassifierState.Ready -> ScanningScreen(
                             theme = currentTheme,
-                            onTryAgain = { currentScreen = Screen.Camera },
+                            bitmap = screen.bitmap,
+                            classifier = state.classifier,
+                            onResult = { result ->
+                                currentScreen = Screen.Result(result, screen.bitmap)
+                            },
+                            onUnknown = { confidence ->
+                                currentScreen = Screen.Unknown(screen.bitmap, confidence)
+                            },
+                            onError = { message ->
+                                currentScreen = Screen.Error(message)
+                            },
+                            onOpenThemes = { showThemePicker = true }
+                        )
+
+                        is ClassifierState.Error -> ErrorScreen(
+                            theme = currentTheme,
+                            message = state.message,
+                            onRetry = {
+                                classifierLoadAttempt += 1
+                            },
+                            onBackToCamera = { currentScreen = Screen.Camera },
                             onOpenThemes = { showThemePicker = true }
                         )
                     }
@@ -138,9 +162,22 @@ fun WhatIsThatApp() {
                     onOpenThemes = { showThemePicker = true }
                 )
 
-                is Screen.Stumped -> StumpedScreen(
+                is Screen.Unknown -> StumpedScreen(
                     theme = currentTheme,
+                    capturedBitmap = screen.bitmap,
+                    confidencePercent = screen.confidencePercent,
                     onTryAgain = { currentScreen = Screen.Camera },
+                    onOpenThemes = { showThemePicker = true }
+                )
+
+                is Screen.Error -> ErrorScreen(
+                    theme = currentTheme,
+                    message = screen.message,
+                    onRetry = {
+                        classifierLoadAttempt += 1
+                        currentScreen = Screen.Camera
+                    },
+                    onBackToCamera = { currentScreen = Screen.Camera },
                     onOpenThemes = { showThemePicker = true }
                 )
             }

@@ -110,6 +110,7 @@ private fun ImageProxy.toRotatedBitmapOrNull(): Bitmap? {
 fun CameraScreen(
     theme: Theme,
     onCaptured: (Bitmap) -> Unit,
+    onCameraError: (String) -> Unit = {},
     onOpenThemes: () -> Unit = {}
 ) {
     var showFlash by remember { mutableStateOf(false) }
@@ -218,7 +219,8 @@ fun CameraScreen(
                     if (hasCameraPermission) {
                         CameraPreview(
                             modifier = Modifier.fillMaxSize(),
-                            onImageCaptureReady = { imageCapture = it }
+                            onImageCaptureReady = { imageCapture = it },
+                            onCameraError = onCameraError
                         )
                     } else {
                         PermissionFallback(theme = theme) {
@@ -260,13 +262,17 @@ fun CameraScreen(
                                     image.close()
                                     if (bitmap != null) {
                                         onCaptured(bitmap)
+                                    } else {
+                                        onCameraError(
+                                            "The photo could not be prepared for scanning. Please try again."
+                                        )
                                     }
                                 }
 
                                 override fun onError(exception: ImageCaptureException) {
-                                    // Capture failed (camera busy, etc.) - nothing
-                                    // actionable here yet; a production app would
-                                    // show an error state instead of doing nothing.
+                                    onCameraError(
+                                        "The camera could not capture a photo. Please try again."
+                                    )
                                 }
                             }
                         )
@@ -318,7 +324,8 @@ fun CameraScreen(
 @Composable
 private fun CameraPreview(
     modifier: Modifier = Modifier,
-    onImageCaptureReady: (ImageCapture) -> Unit = {}
+    onImageCaptureReady: (ImageCapture) -> Unit = {},
+    onCameraError: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -419,11 +426,10 @@ private fun CameraPreview(
                             lifecycleOwner, cameraSelector, preview, imageCapture
                         )
                         onImageCaptureReady(imageCapture)
-                    } catch (e: Exception) {
-                        // Binding can fail if the camera is already in use by
-                        // another app, or the device has no back camera. There's
-                        // nothing actionable to do here yet - a production app
-                        // would show an error state here.
+                    } catch (exception: Exception) {
+                        onCameraError(
+                            "The camera could not start. Close any other app using the camera and try again."
+                        )
                     }
                 }, ContextCompat.getMainExecutor(ctx))
 
