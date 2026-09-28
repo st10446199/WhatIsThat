@@ -11,6 +11,8 @@ import android.graphics.Bitmap
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -57,25 +59,37 @@ import kotlinx.coroutines.withContext
 fun ScanningScreen(
     theme: Theme,
     bitmap: Bitmap,
-    classifier: Classifier,
-    onResult: (ScanResult?) -> Unit,
+    classifier: Classifier?,
+    onResult: (ScanResult) -> Unit,
+    onUnknown: (Int?) -> Unit,
+    onError: (String) -> Unit,
     onOpenThemes: () -> Unit = {}
 ) {
-    LaunchedEffect(bitmap) {
+    LaunchedEffect(bitmap, classifier) {
+        val activeClassifier = classifier ?: return@LaunchedEffect
         val minimumDisplayTime = launch { delay(1200) }
 
         val prediction = withContext(Dispatchers.Default) {
-            classifier.classify(bitmap)
+            activeClassifier.classify(bitmap)
         }
 
         minimumDisplayTime.join()
 
-        val result = if (prediction != null && prediction.second >= CONFIDENCE_THRESHOLD) {
-            ScanResult(label = prediction.first, confidencePercent = prediction.second, emoji = "🔍")
-        } else {
-            null
+        when {
+            prediction == null -> onError(
+                "The AI model could not analyze this photo. Please try another scan."
+            )
+
+            prediction.second < CONFIDENCE_THRESHOLD -> onUnknown(prediction.second)
+
+            else -> onResult(
+                ScanResult(
+                    label = prediction.first,
+                    confidencePercent = prediction.second,
+                    emoji = "🔍"
+                )
+            )
         }
-        onResult(result)
     }
 
     val transition = rememberInfiniteTransition(label = "scanLine")
@@ -89,6 +103,8 @@ fun ScanningScreen(
         label = "lineY"
     )
 
+    val isPreparingModel = classifier == null
+
     Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
         ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
 
@@ -99,8 +115,6 @@ fun ScanningScreen(
                 .padding(horizontal = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Viewfinder box - same size as the Camera screen's, with the
-            // scan line sweeping from top to bottom on a loop
             var boxHeightPx by remember { mutableStateOf(0) }
             Box(
                 modifier = Modifier
@@ -111,6 +125,13 @@ fun ScanningScreen(
                     .background(theme.surface)
                     .onGloballyPositioned { boxHeightPx = it.size.height }
             ) {
+                androidx.compose.foundation.Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Captured object being analyzed",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -137,14 +158,14 @@ fun ScanningScreen(
             }
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "Figuring it out...",
+                text = if (isPreparingModel) "Getting the AI ready..." else "Figuring it out...",
                 color = theme.text,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Medium
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Running local AI model",
+                text = if (isPreparingModel) "Loading local model" else "Analyzing your photo on device",
                 color = theme.textMuted,
                 fontSize = 13.sp
             )
@@ -154,10 +175,8 @@ fun ScanningScreen(
 }
 
 /**
- * Result screen - now shows the actual captured photo (Commit 5), replacing
- * the emoji placeholder from Commit 4, on top of the spring bounce-in from
- * Commit 3. Falls back to the emoji if no bitmap is available (e.g. the
- * @Preview functions below, which don't have a real captured photo).
+ * Successful recognition result with the captured photo, animated confidence
+ * feedback, local processing information, and a clear route into another scan.
  */
 @Composable
 fun ResultScreen(
@@ -170,9 +189,13 @@ fun ResultScreen(
     val playTap = rememberTapSound()
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(result) { visible = true }
+
     val scale by animateFloatAsState(
-        targetValue = if (visible) 1f else 0.8f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        targetValue = if (visible) 1f else 0.94f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
         label = "resultBounce"
     )
     val contentAlpha by animateFloatAsState(
@@ -180,6 +203,18 @@ fun ResultScreen(
         animationSpec = tween(300),
         label = "resultFadeIn"
     )
+    val confidenceProgress by animateFloatAsState(
+        targetValue = if (visible) result.confidencePercent.coerceIn(0, 100) / 100f else 0f,
+        animationSpec = tween(700, delayMillis = 180),
+        label = "confidenceProgress"
+    )
+
+    val confidenceLabel = when {
+        result.confidencePercent >= 70 -> "Strong match"
+        result.confidencePercent >= 40 -> "Good match"
+        result.confidencePercent >= 20 -> "Likely match"
+        else -> "Possible match"
+    }
 
     Column(
         modifier = Modifier
@@ -193,45 +228,60 @@ fun ResultScreen(
     ) {
         ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
 
-        // The actual captured photo, or the emoji fallback if none was passed
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.4f)
-                .padding(horizontal = 32.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .border(1.dp, theme.border, RoundedCornerShape(16.dp))
+                .weight(0.43f)
+                .padding(horizontal = 24.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .border(1.dp, theme.border, RoundedCornerShape(20.dp))
                 .background(theme.surface),
             contentAlignment = Alignment.Center
         ) {
             if (capturedBitmap != null) {
                 androidx.compose.foundation.Image(
                     bitmap = capturedBitmap.asImageBitmap(),
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(16.dp)),
+                    contentDescription = "Captured object identified as ${result.label}",
+                    modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
             } else {
                 Text(text = result.emoji, fontSize = 64.sp)
             }
 
-            // "IDENTIFIED" badge, top-right
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(12.dp)
                     .clip(RoundedCornerShape(50))
                     .background(theme.accent)
-                    .padding(horizontal = 12.dp, vertical = 5.dp)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Text(
-                    text = "IDENTIFIED",
+                    text = "✓ IDENTIFIED",
                     color = Color.White,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.5.sp
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, theme.bg.copy(alpha = 0.82f))
+                        )
+                    )
+                    .padding(start = 16.dp, end = 16.dp, top = 34.dp, bottom = 14.dp)
+            ) {
+                Text(
+                    text = "Analyzed privately on this device",
+                    color = Color.White.copy(alpha = 0.9f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
         }
@@ -239,89 +289,140 @@ fun ResultScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.6f)
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+                .weight(0.57f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "IT'S A —",
+                text = "I think this is",
                 color = theme.textMuted,
-                fontSize = 12.sp,
-                letterSpacing = 1.sp
+                fontSize = 13.sp
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "${result.label}!",
+                text = result.label,
                 color = theme.text,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                maxLines = 2
             )
+
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Confidence label + percentage row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(text = "CONFIDENCE", color = theme.textMuted, fontSize = 11.sp, letterSpacing = 0.5.sp)
-                Text(
-                    text = "${result.confidencePercent}%",
-                    color = theme.accent,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            // Confidence progress bar
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(50))
+                    .clip(RoundedCornerShape(16.dp))
                     .background(theme.surface)
+                    .border(1.dp, theme.borderSubtle, RoundedCornerShape(16.dp))
+                    .padding(16.dp)
             ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "CONFIDENCE",
+                            color = theme.textMuted,
+                            fontSize = 11.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = confidenceLabel,
+                            color = theme.textSecondary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Text(
+                        text = "${result.confidencePercent}%",
+                        color = theme.accent,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(result.confidencePercent / 100f)
-                        .fillMaxHeight()
+                        .fillMaxWidth()
+                        .height(7.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(theme.accent)
-                )
+                        .background(theme.borderSubtle)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(confidenceProgress)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(50))
+                            .background(theme.accent)
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // "Fun fact" callout
-            Box(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(14.dp))
                     .background(theme.surface)
-                    .border(1.dp, theme.borderSubtle, RoundedCornerShape(12.dp))
-                    .padding(14.dp)
+                    .border(1.dp, theme.borderSubtle, RoundedCornerShape(14.dp))
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Fun fact: Recognized entirely on-device — no internet, no cloud, just local AI doing its thing. 🐷",
-                    color = theme.textSecondary,
-                    fontSize = 13.sp
-                )
+                Text(text = "🔒", fontSize = 18.sp)
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "Private by design",
+                        color = theme.text,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Recognition happens locally. Your photo is not uploaded for this scan.",
+                        color = theme.textMuted,
+                        fontSize = 12.sp
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(18.dp))
             Button(
                 onClick = {
                     playTap()
                     onScanAgain()
                 },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = theme.accent,
                     contentColor = Color.White
-                )
+                ),
+                shape = RoundedCornerShape(14.dp)
             ) {
-                Text("Scan Again ?")
+                Text(
+                    text = "Scan another object",
+                    fontWeight = FontWeight.SemiBold
+                )
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "AI predictions can be wrong. Use the confidence score as a guide.",
+                color = theme.textMuted,
+                fontSize = 11.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }
@@ -331,7 +432,13 @@ fun ResultScreen(
  * in-character copy instead of a generic error message.
  */
 @Composable
-fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit = {}) {
+fun StumpedScreen(
+    theme: Theme,
+    capturedBitmap: Bitmap? = null,
+    confidencePercent: Int? = null,
+    onTryAgain: () -> Unit,
+    onOpenThemes: () -> Unit = {}
+) {
     val playTap = rememberTapSound()
     val transition = rememberInfiniteTransition(label = "wobble")
     val rotation by transition.animateFloat(
@@ -347,7 +454,6 @@ fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit
     Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
         ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
 
-        // Placeholder box matching the photo-frame area on other screens
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -358,11 +464,38 @@ fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit
                 .background(theme.surface),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "🤔",
-                fontSize = 56.sp,
-                modifier = Modifier.graphicsLayer { rotationZ = rotation }
-            )
+            if (capturedBitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = capturedBitmap.asImageBitmap(),
+                    contentDescription = "Photo the AI could not identify confidently",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(theme.surface.copy(alpha = 0.9f))
+                        .border(1.dp, theme.border, RoundedCornerShape(50))
+                        .padding(horizontal = 12.dp, vertical = 5.dp)
+                ) {
+                    Text(
+                        text = "NOT SURE",
+                        color = theme.text,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+            } else {
+                Text(
+                    text = "🤔",
+                    fontSize = 56.sp,
+                    modifier = Modifier.graphicsLayer { rotationZ = rotation }
+                )
+            }
         }
 
         Column(
@@ -373,21 +506,24 @@ fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Hmm... you got me 🤔",
+                text = "I'm not sure about this one 🤔",
                 color = theme.text,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Stumped me on this one — I've seen a lot of things, but not quite that.",
+                text = if (confidencePercent != null) {
+                    "The best match was only $confidencePercent% confident, so I won't pretend I know what it is."
+                } else {
+                    "I couldn't identify this photo confidently enough to give you a reliable answer."
+                },
                 color = theme.textMuted,
                 fontSize = 13.sp,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
             Spacer(modifier = Modifier.height(20.dp))
 
-            // "TRY THESE:" tips card
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -403,11 +539,11 @@ fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit
                     letterSpacing = 0.5.sp
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                TipRow(emoji = "✨", text = "Better lighting goes a long way", theme = theme)
+                TipRow(emoji = "✨", text = "Use brighter, even lighting", theme = theme)
                 Spacer(modifier = Modifier.height(10.dp))
-                TipRow(emoji = "📐", text = "Get closer — fill the frame", theme = theme)
+                TipRow(emoji = "📐", text = "Move closer and fill more of the frame", theme = theme)
                 Spacer(modifier = Modifier.height(10.dp))
-                TipRow(emoji = "🔄", text = "Try a different angle", theme = theme)
+                TipRow(emoji = "🔄", text = "Try another angle with less background", theme = theme)
             }
 
             Spacer(modifier = Modifier.height(20.dp))
@@ -422,7 +558,77 @@ fun StumpedScreen(theme: Theme, onTryAgain: () -> Unit, onOpenThemes: () -> Unit
                     contentColor = Color.White
                 )
             ) {
-                Text("Try Again")
+                Text("Try Another Scan")
+            }
+        }
+    }
+}
+
+@Composable
+fun ErrorScreen(
+    theme: Theme,
+    message: String,
+    onRetry: () -> Unit,
+    onBackToCamera: () -> Unit,
+    onOpenThemes: () -> Unit = {}
+) {
+    val playTap = rememberTapSound()
+
+    Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
+        ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(text = "⚠️", fontSize = 58.sp)
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(
+                text = "Something went wrong",
+                color = theme.text,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = message,
+                color = theme.textMuted,
+                fontSize = 14.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(28.dp))
+
+            Button(
+                onClick = {
+                    playTap()
+                    onRetry()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = theme.accent,
+                    contentColor = Color.White
+                )
+            ) {
+                Text("Retry AI")
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Button(
+                onClick = {
+                    playTap()
+                    onBackToCamera()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = theme.surface,
+                    contentColor = theme.text
+                )
+            ) {
+                Text("Back to Camera")
             }
         }
     }
