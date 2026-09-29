@@ -32,6 +32,7 @@ import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import com.mohammedanaspatel.whatisthat.data.ScanResult
 import com.mohammedanaspatel.whatisthat.data.ScanHistoryItem
 import com.mohammedanaspatel.whatisthat.data.ScanHistoryStore
+import com.mohammedanaspatel.whatisthat.data.HistoryLayout
 import com.mohammedanaspatel.whatisthat.ml.Classifier
 import com.mohammedanaspatel.whatisthat.ui.screens.CameraScreen
 import com.mohammedanaspatel.whatisthat.ui.screens.ErrorScreen
@@ -79,6 +80,7 @@ fun WhatIsThatApp() {
     val context = LocalContext.current
     val historyStore = remember { ScanHistoryStore(context.applicationContext) }
     var scanHistory by remember { mutableStateOf<List<ScanHistoryItem>>(historyStore.load()) }
+    var historyLayout by remember { mutableStateOf(historyStore.loadLayout()) }
     var classifierState by remember { mutableStateOf<ClassifierState>(ClassifierState.Loading) }
     var classifierLoadAttempt by remember { mutableIntStateOf(0) }
 
@@ -124,7 +126,7 @@ fun WhatIsThatApp() {
                             focusTarget = screen.focusTarget,
                             classifier = null,
                             onResult = { result ->
-                                scanHistory = historyStore.add(result)
+                                scanHistory = historyStore.add(result, screen.bitmap)
                                 currentScreen = Screen.Result(result, screen.bitmap)
                             },
                             onUnknown = { confidence ->
@@ -142,7 +144,7 @@ fun WhatIsThatApp() {
                             focusTarget = screen.focusTarget,
                             classifier = state.classifier,
                             onResult = { result ->
-                                scanHistory = historyStore.add(result)
+                                scanHistory = historyStore.add(result, screen.bitmap)
                                 currentScreen = Screen.Result(result, screen.bitmap)
                             },
                             onUnknown = { confidence ->
@@ -196,7 +198,12 @@ fun WhatIsThatApp() {
                 is Screen.History -> HistoryScreen(
                     theme = currentTheme,
                     items = scanHistory,
+                    layout = historyLayout,
                     onBack = { currentScreen = Screen.Camera },
+                    onLayoutChange = { selectedLayout ->
+                        historyLayout = selectedLayout
+                        historyStore.saveLayout(selectedLayout)
+                    },
                     onClear = {
                         historyStore.clear()
                         scanHistory = emptyList()

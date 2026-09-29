@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -209,7 +210,7 @@ fun CameraScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 32.dp),
+                    .padding(horizontal = 22.dp),
                 contentAlignment = Alignment.Center
             ) {
                 // Viewfinder frame: shows the live CameraX feed once permission is
@@ -217,8 +218,12 @@ fun CameraScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(16.dp))
-                        .border(1.dp, theme.border, RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(28.dp))
+                        .border(
+                            width = 1.5.dp,
+                            color = theme.accent.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(28.dp)
+                        )
                         .background(if (theme.isDark) Color(0xFF141420) else Color(0xFFE8DDD8)),
                     contentAlignment = Alignment.Center
                 ) {
@@ -238,23 +243,41 @@ fun CameraScreen(
 
                 ViewfinderCorners(accentColor = theme.accent)
 
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = focusTarget != null,
+                    enter = fadeIn() + scaleIn(initialScale = 0.92f),
+                    exit = fadeOut() + scaleOut(targetScale = 0.92f),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 14.dp)
+                ) {
+                    AiTargetBadge(theme = theme)
+                }
+
                 Text(
                     text = if (focusTarget == null) {
-                        "Tap an object to make the AI prioritize it"
+                        "Tap an object to target it"
                     } else {
-                        "AI target selected • tap elsewhere to change it"
+                        "Tap elsewhere to retarget"
                     },
-                    color = theme.textMuted,
-                    fontSize = 13.sp,
+                    color = Color.White.copy(alpha = 0.82f),
+                    fontSize = 12.sp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(horizontal = 20.dp, vertical = 48.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.44f))
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                        .offset(y = 26.dp)
                 )
             }
 
             Column(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 56.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(top = 20.dp, bottom = 20.dp)
+                    .navigationBarsPadding(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 CaptureButton(
@@ -299,7 +322,7 @@ fun CameraScreen(
                     fontSize = 12.sp,
                     letterSpacing = 1.sp
                 )
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(16.dp))
                 RecentScansButton(
                     theme = theme,
                     onClick = onOpenHistory
@@ -476,14 +499,19 @@ private fun CameraPreview(
             FocusRing(offsetPx = point)
         }
 
-        // "Reset Focus" pill - only shown while a manual focus point is active
+        // Reset control stays separate from the AI target badge so the two never overlap.
         if (focusPoint != null) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 12.dp)
+                    .align(Alignment.TopEnd)
+                    .padding(top = 14.dp, end = 14.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.Black.copy(alpha = 0.6f))
+                    .background(Color.Black.copy(alpha = 0.58f))
+                    .border(
+                        width = 1.dp,
+                        color = Color.White.copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(50)
+                    )
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -493,9 +521,15 @@ private fun CameraPreview(
                             onFocusTargetChanged(null)
                         }
                     )
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .padding(horizontal = 11.dp, vertical = 7.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Text(text = "Reset Target", color = Color.White, fontSize = 12.sp)
+                Text(
+                    text = "×  Reset",
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
         }
 
@@ -712,20 +746,32 @@ private fun TopBar(
     theme: Theme,
     onOpenThemes: () -> Unit
 ) {
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
-            .padding(top = 48.dp, bottom = 16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .padding(top = 42.dp, bottom = 14.dp)
     ) {
-        Wordmark(theme = theme)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ThemeButton(theme = theme, onClick = onOpenThemes)
-            Spacer(modifier = Modifier.width(8.dp))
+        ThemeButton(
+            theme = theme,
+            onClick = onOpenThemes,
+            modifier = Modifier.align(Alignment.CenterStart)
+        )
+
+        Column(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Wordmark(theme = theme)
+            Spacer(modifier = Modifier.height(5.dp))
             OfflineBadge(theme = theme)
         }
+
+        Spacer(
+            modifier = Modifier
+                .size(36.dp)
+                .align(Alignment.CenterEnd)
+        )
     }
 }
 
@@ -736,32 +782,87 @@ private fun RecentScansButton(
 ) {
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
             .background(theme.surface)
             .border(
                 width = 1.dp,
-                color = theme.borderSubtle,
-                shape = RoundedCornerShape(50)
+                color = theme.accent.copy(alpha = 0.48f),
+                shape = RoundedCornerShape(18.dp)
             )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 16.dp, vertical = 9.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(theme.accent.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "↺",
+                color = theme.accent,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Recent scans",
+                color = theme.text,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "View your previous identifications",
+                color = theme.textMuted,
+                fontSize = 11.sp
+            )
+        }
+
+        Text(
+            text = "›",
+            color = theme.accent,
+            fontSize = 25.sp,
+            fontWeight = FontWeight.Light
+        )
+    }
+}
+
+@Composable
+private fun AiTargetBadge(theme: Theme) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = 0.58f))
+            .border(
+                width = 1.dp,
+                color = theme.accent.copy(alpha = 0.8f),
+                shape = RoundedCornerShape(50)
+            )
+            .padding(horizontal = 13.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "↺",
+            text = "✦",
             color = theme.accent,
-            fontSize = 17.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold
         )
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(7.dp))
         Text(
-            text = "Recent scans",
-            color = theme.text,
-            fontSize = 13.sp,
+            text = "AI target selected",
+            color = Color.White,
+            fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold
         )
     }
@@ -769,12 +870,21 @@ private fun RecentScansButton(
 
 /** Opens the theme picker bottom sheet (wired in MainActivity via onOpenThemes). */
 @Composable
-internal fun ThemeButton(theme: Theme, onClick: () -> Unit) {
+internal fun ThemeButton(
+    theme: Theme,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Box(
-        modifier = Modifier
-            .size(32.dp)
+        modifier = modifier
+            .size(36.dp)
             .clip(RoundedCornerShape(50))
             .background(theme.surface)
+            .border(
+                width = 1.dp,
+                color = theme.borderSubtle,
+                shape = RoundedCornerShape(12.dp)
+            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -782,17 +892,37 @@ internal fun ThemeButton(theme: Theme, onClick: () -> Unit) {
             ),
         contentAlignment = Alignment.Center
     ) {
-        Text(text = "\uD83C\uDFA8", fontSize = 15.sp) // 🎨
+        Text(text = "\uD83C\uDFA8", fontSize = 16.sp) // 🎨
     }
 }
 
 @Composable
 internal fun Wordmark(theme: Theme) {
     Row {
-        Text("What", color = theme.text, fontSize = 27.sp)
-        Text("Is", color = theme.accent, fontSize = 27.sp)
-        Text("That", color = theme.text, fontSize = 27.sp)
-        Text("?", color = theme.accent, fontSize = 27.sp)
+        Text(
+            "What",
+            color = theme.text,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            "Is",
+            color = theme.accent,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            "That",
+            color = theme.text,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            "?",
+            color = theme.accent,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
@@ -805,7 +935,7 @@ internal fun OfflineBadge(theme: Theme) {
             .clip(RoundedCornerShape(50))
             .border(1.dp, tokens.border, RoundedCornerShape(50))
             .background(if (theme.isDark) Color.Black.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.7f))
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
     ) {
         Box(
             modifier = Modifier
@@ -814,7 +944,7 @@ internal fun OfflineBadge(theme: Theme) {
                 .background(theme.accent)
         )
         Spacer(modifier = Modifier.width(6.dp))
-        Text(text = "OFFLINE", color = theme.accent, fontSize = 11.sp, letterSpacing = 0.5.sp)
+        Text(text = "OFFLINE", color = theme.accent, fontSize = 10.sp, letterSpacing = 0.6.sp)
     }
 }
 

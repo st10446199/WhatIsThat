@@ -8,6 +8,7 @@
 package com.mohammedanaspatel.whatisthat.ui.screens
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,6 +19,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import com.mohammedanaspatel.whatisthat.data.ScanResult
 import com.mohammedanaspatel.whatisthat.data.ScanHistoryItem
+import com.mohammedanaspatel.whatisthat.data.HistoryLayout
 import com.mohammedanaspatel.whatisthat.ml.Classifier
 import com.mohammedanaspatel.whatisthat.ui.theme.Theme
 import kotlinx.coroutines.Dispatchers
@@ -648,43 +652,146 @@ fun ErrorScreen(
 fun HistoryScreen(
     theme: Theme,
     items: List<ScanHistoryItem>,
+    layout: HistoryLayout,
     onBack: () -> Unit,
+    onLayoutChange: (HistoryLayout) -> Unit,
     onClear: () -> Unit,
     onOpenThemes: () -> Unit = {}
 ) {
     val playTap = rememberTapSound()
+    var showMenu by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(theme.bg)
     ) {
-        ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
-
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 20.dp)
+                .padding(top = 44.dp, bottom = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(theme.surface)
+                    .border(
+                        width = 1.dp,
+                        color = theme.borderSubtle,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    .clickable {
+                        playTap()
+                        onBack()
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "‹",
+                    color = theme.text,
+                    fontSize = 28.sp
+                )
+            }
+
             Text(
                 text = "Recent scans",
                 color = theme.text,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 14.dp)
             )
 
-            Text(
-                text = "Back",
-                color = theme.accent,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.clickable {
-                    playTap()
-                    onBack()
+            Box {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(theme.surface)
+                        .border(
+                            width = 1.dp,
+                            color = theme.borderSubtle,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .clickable {
+                            playTap()
+                            showMenu = true
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "⋮",
+                        color = theme.text,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
-            )
+
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false },
+                    modifier = Modifier.background(theme.surface)
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = if (layout == HistoryLayout.LIST) {
+                                    "✓  List view"
+                                } else {
+                                    "☷  List view"
+                                },
+                                color = if (layout == HistoryLayout.LIST) {
+                                    theme.accent
+                                } else {
+                                    theme.text
+                                }
+                            )
+                        },
+                        onClick = {
+                            showMenu = false
+                            onLayoutChange(HistoryLayout.LIST)
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = if (layout == HistoryLayout.GRID) {
+                                    "✓  Grid view"
+                                } else {
+                                    "▦  Grid view"
+                                },
+                                color = if (layout == HistoryLayout.GRID) {
+                                    theme.accent
+                                } else {
+                                    theme.text
+                                }
+                            )
+                        },
+                        onClick = {
+                            showMenu = false
+                            onLayoutChange(HistoryLayout.GRID)
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "Clear history",
+                                color = theme.text
+                            )
+                        },
+                        onClick = {
+                            showMenu = false
+                            onClear()
+                        }
+                    )
+                }
+            }
         }
 
         if (items.isEmpty()) {
@@ -695,7 +802,11 @@ fun HistoryScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Text(text = "⌛", fontSize = 48.sp)
+                Text(
+                    text = "⌕",
+                    color = theme.accent,
+                    fontSize = 52.sp
+                )
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "No scans yet",
@@ -716,38 +827,51 @@ fun HistoryScreen(
                     .weight(1f)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 12.dp)
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 28.dp)
             ) {
-                items.forEach { item ->
-                    HistoryRow(item = item, theme = theme)
-                    Spacer(modifier = Modifier.height(10.dp))
+                when (layout) {
+                    HistoryLayout.LIST -> {
+                        items.forEach { item ->
+                            HistoryListCard(
+                                item = item,
+                                theme = theme
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+                    }
+
+                    HistoryLayout.GRID -> {
+                        items.chunked(2).forEach { rowItems ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                rowItems.forEach { item ->
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        HistoryGridCard(
+                                            item = item,
+                                            theme = theme
+                                        )
+                                    }
+                                }
+
+                                if (rowItems.size == 1) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+                    }
                 }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Button(
-                    onClick = {
-                        playTap()
-                        onClear()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = theme.surface,
-                        contentColor = theme.text
-                    ),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Text("Clear history")
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
 }
 
 @Composable
-private fun HistoryRow(
+private fun HistoryListCard(
     item: ScanHistoryItem,
     theme: Theme
 ) {
@@ -761,25 +885,21 @@ private fun HistoryRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(theme.surface)
-            .border(1.dp, theme.borderSubtle, RoundedCornerShape(14.dp))
-            .padding(14.dp),
+            .border(
+                width = 1.dp,
+                color = theme.borderSubtle,
+                shape = RoundedCornerShape(18.dp)
+            )
+            .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(42.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(theme.accent.copy(alpha = 0.14f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "⌕",
-                color = theme.accent,
-                fontSize = 22.sp
-            )
-        }
+        HistoryThumbnail(
+            item = item,
+            theme = theme,
+            modifier = Modifier.size(72.dp)
+        )
 
         Spacer(modifier = Modifier.width(12.dp))
 
@@ -788,8 +908,15 @@ private fun HistoryRow(
                 text = item.label,
                 color = theme.text,
                 fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.Bold,
                 maxLines = 2
+            )
+            Spacer(modifier = Modifier.height(5.dp))
+            Text(
+                text = "${item.confidencePercent}% confidence",
+                color = theme.accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
             )
             Spacer(modifier = Modifier.height(3.dp))
             Text(
@@ -799,19 +926,103 @@ private fun HistoryRow(
             )
         }
 
-        Spacer(modifier = Modifier.width(12.dp))
+        Text(
+            text = "›",
+            color = theme.textMuted,
+            fontSize = 25.sp
+        )
+    }
+}
 
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = "${item.confidencePercent}%",
-                color = theme.accent,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold
+@Composable
+private fun HistoryGridCard(
+    item: ScanHistoryItem,
+    theme: Theme
+) {
+    val dateText = remember(item.scannedAtMillis) {
+        SimpleDateFormat(
+            "dd MMM  HH:mm",
+            Locale.getDefault()
+        ).format(Date(item.scannedAtMillis))
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(theme.surface)
+            .border(
+                width = 1.dp,
+                color = theme.borderSubtle,
+                shape = RoundedCornerShape(18.dp)
             )
+            .padding(9.dp)
+    ) {
+        HistoryThumbnail(
+            item = item,
+            theme = theme,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(112.dp)
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Text(
+            text = item.label,
+            color = theme.text,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Text(
+            text = "${item.confidencePercent}%",
+            color = theme.accent,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = dateText,
+            color = theme.textMuted,
+            fontSize = 10.sp,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun HistoryThumbnail(
+    item: ScanHistoryItem,
+    theme: Theme,
+    modifier: Modifier = Modifier
+) {
+    val bitmap = remember(item.imagePath) {
+        item.imagePath
+            ?.let { path -> BitmapFactory.decodeFile(path) }
+    }
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(13.dp))
+            .background(theme.accent.copy(alpha = 0.10f)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (bitmap != null) {
+            androidx.compose.foundation.Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = item.label,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
             Text(
-                text = "confidence",
-                color = theme.textMuted,
-                fontSize = 10.sp
+                text = "⌕",
+                color = theme.accent,
+                fontSize = 24.sp
             )
         }
     }
