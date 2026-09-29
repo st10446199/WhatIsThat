@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mohammedanaspatel.whatisthat.data.CONFIDENCE_THRESHOLD
+import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import com.mohammedanaspatel.whatisthat.data.ScanResult
 import com.mohammedanaspatel.whatisthat.ml.Classifier
 import com.mohammedanaspatel.whatisthat.ui.theme.Theme
@@ -59,18 +60,19 @@ import kotlinx.coroutines.withContext
 fun ScanningScreen(
     theme: Theme,
     bitmap: Bitmap,
+    focusTarget: FocusTarget? = null,
     classifier: Classifier?,
     onResult: (ScanResult) -> Unit,
     onUnknown: (Int?) -> Unit,
     onError: (String) -> Unit,
     onOpenThemes: () -> Unit = {}
 ) {
-    LaunchedEffect(bitmap, classifier) {
+    LaunchedEffect(bitmap, focusTarget, classifier) {
         val activeClassifier = classifier ?: return@LaunchedEffect
         val minimumDisplayTime = launch { delay(1200) }
 
         val prediction = withContext(Dispatchers.Default) {
-            activeClassifier.classify(bitmap)
+            activeClassifier.classify(bitmap, focusTarget)
         }
 
         minimumDisplayTime.join()
@@ -165,7 +167,11 @@ fun ScanningScreen(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = if (isPreparingModel) "Loading local model" else "Analyzing your photo on device",
+                text = when {
+                    isPreparingModel -> "Loading local model"
+                    focusTarget != null -> "Prioritizing your selected object"
+                    else -> "Analyzing your photo on device"
+                },
                 color = theme.textMuted,
                 fontSize = 13.sp
             )

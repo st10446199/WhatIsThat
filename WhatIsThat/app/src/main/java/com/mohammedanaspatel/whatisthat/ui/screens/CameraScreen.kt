@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.mohammedanaspatel.whatisthat.R
+import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import com.mohammedanaspatel.whatisthat.ui.theme.Theme
 import com.mohammedanaspatel.whatisthat.ui.theme.accentTokens
 import kotlinx.coroutines.delay
@@ -109,11 +110,12 @@ private fun ImageProxy.toRotatedBitmapOrNull(): Bitmap? {
 @Composable
 fun CameraScreen(
     theme: Theme,
-    onCaptured: (Bitmap) -> Unit,
+    onCaptured: (Bitmap, FocusTarget?) -> Unit,
     onCameraError: (String) -> Unit = {},
     onOpenThemes: () -> Unit = {}
 ) {
     var showFlash by remember { mutableStateOf(false) }
+    var focusTarget by remember { mutableStateOf<FocusTarget?>(null) }
 
     // --- Camera permission handling ---
     // Check current permission state once, then offer a launcher that shows
@@ -220,6 +222,7 @@ fun CameraScreen(
                         CameraPreview(
                             modifier = Modifier.fillMaxSize(),
                             onImageCaptureReady = { imageCapture = it },
+                            onFocusTargetChanged = { focusTarget = it },
                             onCameraError = onCameraError
                         )
                     } else {
@@ -232,10 +235,17 @@ fun CameraScreen(
                 ViewfinderCorners(accentColor = theme.accent)
 
                 Text(
-                    text = "Point at anything curious",
+                    text = if (focusTarget == null) {
+                        "Tap an object to make the AI prioritize it"
+                    } else {
+                        "AI target selected • tap elsewhere to change it"
+                    },
                     color = theme.textMuted,
                     fontSize = 13.sp,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp)
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 20.dp, vertical = 48.dp)
                 )
             }
 
@@ -261,7 +271,7 @@ fun CameraScreen(
                                     val bitmap = image.toRotatedBitmapOrNull()
                                     image.close()
                                     if (bitmap != null) {
-                                        onCaptured(bitmap)
+                                        onCaptured(bitmap, focusTarget)
                                     } else {
                                         onCameraError(
                                             "The photo could not be prepared for scanning. Please try again."
@@ -325,6 +335,7 @@ fun CameraScreen(
 private fun CameraPreview(
     modifier: Modifier = Modifier,
     onImageCaptureReady: (ImageCapture) -> Unit = {},
+    onFocusTargetChanged: (FocusTarget?) -> Unit = {},
     onCameraError: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -379,6 +390,18 @@ private fun CameraPreview(
 
                         cam.cameraControl.startFocusAndMetering(action)
                         focusPoint = offset
+
+                        val previewWidth = view.width.toFloat()
+                        val previewHeight = view.height.toFloat()
+                        if (previewWidth > 0f && previewHeight > 0f) {
+                            onFocusTargetChanged(
+                                FocusTarget(
+                                    xRatio = (offset.x / previewWidth).coerceIn(0f, 1f),
+                                    yRatio = (offset.y / previewHeight).coerceIn(0f, 1f),
+                                    previewAspectRatio = previewWidth / previewHeight
+                                )
+                            )
+                        }
                     }
                 }
                 // Pinch-to-zoom: reads how much the pinch gesture scaled by,
@@ -399,7 +422,9 @@ private fun CameraPreview(
                     }
                 },
             factory = { ctx ->
-                val view = PreviewView(ctx)
+                val view = PreviewView(ctx).apply {
+                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                }
                 previewView = view
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
@@ -456,11 +481,12 @@ private fun CameraPreview(
                         onClick = {
                             camera?.cameraControl?.cancelFocusAndMetering()
                             focusPoint = null
+                            onFocusTargetChanged(null)
                         }
                     )
                     .padding(horizontal = 14.dp, vertical = 8.dp)
             ) {
-                Text(text = "Reset Focus", color = Color.White, fontSize = 12.sp)
+                Text(text = "Reset Target", color = Color.White, fontSize = 12.sp)
             }
         }
 
@@ -747,6 +773,6 @@ internal fun OfflineBadge(theme: Theme) {
 private fun CameraScreenPreview() {
     CameraScreen(
         theme = com.mohammedanaspatel.whatisthat.ui.theme.PRESETS.first { it.id == "obsidian" },
-        onCaptured = {}
+        onCaptured = { _, _ -> }
     )
 }

@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import com.mohammedanaspatel.whatisthat.data.ScanResult
 import com.mohammedanaspatel.whatisthat.ml.Classifier
 import com.mohammedanaspatel.whatisthat.ui.screens.CameraScreen
@@ -44,7 +45,7 @@ private const val APP_TAG = "WhatIsThat"
 
 sealed class Screen {
     data object Camera : Screen()
-    data class Scanning(val bitmap: Bitmap) : Screen()
+    data class Scanning(val bitmap: Bitmap, val focusTarget: FocusTarget?) : Screen()
     data class Result(val result: ScanResult, val bitmap: Bitmap) : Screen()
     data class Unknown(val bitmap: Bitmap, val confidencePercent: Int?) : Screen()
     data class Error(val message: String) : Screen()
@@ -99,8 +100,8 @@ fun WhatIsThatApp() {
             when (screen) {
                 is Screen.Camera -> CameraScreen(
                     theme = currentTheme,
-                    onCaptured = { bitmap ->
-                        currentScreen = Screen.Scanning(bitmap)
+                    onCaptured = { bitmap, focusTarget ->
+                        currentScreen = Screen.Scanning(bitmap, focusTarget)
                     },
                     onCameraError = { message ->
                         currentScreen = Screen.Error(message)
@@ -113,6 +114,7 @@ fun WhatIsThatApp() {
                         is ClassifierState.Loading -> ScanningScreen(
                             theme = currentTheme,
                             bitmap = screen.bitmap,
+                            focusTarget = screen.focusTarget,
                             classifier = null,
                             onResult = { result ->
                                 currentScreen = Screen.Result(result, screen.bitmap)
@@ -129,6 +131,7 @@ fun WhatIsThatApp() {
                         is ClassifierState.Ready -> ScanningScreen(
                             theme = currentTheme,
                             bitmap = screen.bitmap,
+                            focusTarget = screen.focusTarget,
                             classifier = state.classifier,
                             onResult = { result ->
                                 currentScreen = Screen.Result(result, screen.bitmap)

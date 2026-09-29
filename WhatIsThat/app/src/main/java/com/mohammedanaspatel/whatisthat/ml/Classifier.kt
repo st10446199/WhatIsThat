@@ -10,6 +10,7 @@ package com.mohammedanaspatel.whatisthat.ml
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
@@ -105,9 +106,13 @@ class Classifier(context: Context) {
      * includes lots of irrelevant background. We therefore centre-crop to the
      * model's aspect ratio first, then resize.
      */
-    fun classify(bitmap: Bitmap): Pair<String, Int>? {
+    fun classify(bitmap: Bitmap, focusTarget: FocusTarget? = null): Pair<String, Int>? {
         return try {
-            val cropped = centerCropToModelAspectRatio(bitmap)
+            val cropped = if (focusTarget == null) {
+                centerCropToModelAspectRatio(bitmap)
+            } else {
+                cropAroundFocusTarget(bitmap, focusTarget)
+            }
             val resized = Bitmap.createScaledBitmap(cropped, inputWidth, inputHeight, true)
             val inputBuffer = bitmapToByteBuffer(resized)
 
@@ -125,7 +130,8 @@ class Classifier(context: Context) {
             }
 
             prediction?.also { (label, confidence) ->
-                Log.d(TAG, "Prediction: $label ($confidence%)")
+                val mode = if (focusTarget == null) "full image" else "focus target"
+                Log.d(TAG, "Prediction: $label ($confidence%) using $mode")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Classification failed", e)
@@ -199,6 +205,57 @@ class Classifier(context: Context) {
 
         buffer.rewind()
         return buffer
+    }
+
+    private fun cropAroundFocusTarget(bitmap: Bitmap, focusTarget: FocusTarget): Bitmap {
+        val bitmapWidth = bitmap.width.toFloat()
+        val bitmapHeight = bitmap.height.toFloat()
+        val sourceAspectRatio = bitmapWidth / bitmapHeight
+        val previewAspectRatio = focusTarget.previewAspectRatio.coerceAtLeast(0.01f)
+
+        val mappedXRatio: Float
+        val mappedYRatio: Float
+
+        if (sourceAspectRatio > previewAspectRatio) {
+            val visibleWidthFraction = (previewAspectRatio / sourceAspectRatio).coerceIn(0f, 1f)
+            val croppedSideFraction = 1f.minus(visibleWidthFraction) / 2f
+            mappedXRatio = (croppedSideFraction +
+                focusTarget.xRatio * visibleWidthFraction).coerceIn(0f, 1f)
+            mappedYRatio = focusTarget.yRatio.coerceIn(0f, 1f)
+        } else if (sourceAspectRatio < previewAspectRatio) {
+            val visibleHeightFraction = (sourceAspectRatio / previewAspectRatio).coerceIn(0f, 1f)
+            mappedXRatio = focusTarget.xRatio.coerceIn(0f, 1f)
+            val croppedTopFraction = 1f.minus(visibleHeightFraction) / 2f
+            mappedYRatio = (croppedTopFraction +
+                focusTarget.yRatio * visibleHeightFraction).coerceIn(0f, 1f)
+        } else {
+            mappedXRatio = focusTarget.xRatio.coerceIn(0f, 1f)
+            mappedYRatio = focusTarget.yRatio.coerceIn(0f, 1f)
+        }
+
+        val targetRatio = inputWidth.toFloat() / inputHeight.toFloat()
+        val maximumCropWidth = bitmapWidth * 0.62f
+        val maximumCropHeight = bitmapHeight * 0.62f
+
+        val cropWidth: Int
+        val cropHeight: Int
+
+        if (maximumCropWidth / maximumCropHeight > targetRatio) {
+            cropHeight = maximumCropHeight.roundToInt().coerceAtLeast(1)
+            cropWidth = (cropHeight * targetRatio).roundToInt().coerceAtLeast(1)
+        } else {
+            cropWidth = maximumCropWidth.roundToInt().coerceAtLeast(1)
+            cropHeight = (cropWidth / targetRatio).roundToInt().coerceAtLeast(1)
+        }
+
+        val centerX = (mappedXRatio * bitmapWidth).roundToInt()
+        val centerY = (mappedYRatio * bitmapHeight).roundToInt()
+        val maximumLeft = bitmap.width.minus(cropWidth).coerceAtLeast(0)
+        val maximumTop = bitmap.height.minus(cropHeight).coerceAtLeast(0)
+        val left = centerX.minus(cropWidth / 2).coerceIn(0, maximumLeft)
+        val top = centerY.minus(cropHeight / 2).coerceIn(0, maximumTop)
+
+        return Bitmap.createBitmap(bitmap, left, top, cropWidth, cropHeight)
     }
 
     private fun centerCropToModelAspectRatio(bitmap: Bitmap): Bitmap {
