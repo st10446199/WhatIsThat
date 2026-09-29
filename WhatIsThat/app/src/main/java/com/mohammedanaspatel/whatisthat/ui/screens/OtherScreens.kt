@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -34,12 +35,16 @@ import androidx.compose.ui.unit.sp
 import com.mohammedanaspatel.whatisthat.data.CONFIDENCE_THRESHOLD
 import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import com.mohammedanaspatel.whatisthat.data.ScanResult
+import com.mohammedanaspatel.whatisthat.data.ScanHistoryItem
 import com.mohammedanaspatel.whatisthat.ml.Classifier
 import com.mohammedanaspatel.whatisthat.ui.theme.Theme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Scanning screen - now runs real TFLite inference (Commit 5) on the photo
@@ -636,6 +641,179 @@ fun ErrorScreen(
             ) {
                 Text("Back to Camera")
             }
+        }
+    }
+}
+
+@Composable
+fun HistoryScreen(
+    theme: Theme,
+    items: List<ScanHistoryItem>,
+    onBack: () -> Unit,
+    onClear: () -> Unit,
+    onOpenThemes: () -> Unit = {}
+) {
+    val playTap = rememberTapSound()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(theme.bg)
+    ) {
+        ScreenTopBar(theme = theme, onOpenThemes = onOpenThemes)
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Recent scans",
+                color = theme.text,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "Back",
+                color = theme.accent,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clickable {
+                    playTap()
+                    onBack()
+                }
+            )
+        }
+
+        if (items.isEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(text = "⌛", fontSize = 48.sp)
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "No scans yet",
+                    color = theme.text,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Successful identifications will appear here.",
+                    color = theme.textMuted,
+                    fontSize = 13.sp
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 12.dp)
+            ) {
+                items.forEach { item ->
+                    HistoryRow(item = item, theme = theme)
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Button(
+                    onClick = {
+                        playTap()
+                        onClear()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = theme.surface,
+                        contentColor = theme.text
+                    ),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("Clear history")
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryRow(
+    item: ScanHistoryItem,
+    theme: Theme
+) {
+    val dateText = remember(item.scannedAtMillis) {
+        SimpleDateFormat(
+            "dd MMM  HH:mm",
+            Locale.getDefault()
+        ).format(Date(item.scannedAtMillis))
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(theme.surface)
+            .border(1.dp, theme.borderSubtle, RoundedCornerShape(14.dp))
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(42.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(theme.accent.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "⌕",
+                color = theme.accent,
+                fontSize = 22.sp
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.label,
+                color = theme.text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = dateText,
+                color = theme.textMuted,
+                fontSize = 11.sp
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                text = "${item.confidencePercent}%",
+                color = theme.accent,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "confidence",
+                color = theme.textMuted,
+                fontSize = 10.sp
+            )
         }
     }
 }

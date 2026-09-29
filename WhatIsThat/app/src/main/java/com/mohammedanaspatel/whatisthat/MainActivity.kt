@@ -30,9 +30,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import com.mohammedanaspatel.whatisthat.data.ScanResult
+import com.mohammedanaspatel.whatisthat.data.ScanHistoryItem
+import com.mohammedanaspatel.whatisthat.data.ScanHistoryStore
 import com.mohammedanaspatel.whatisthat.ml.Classifier
 import com.mohammedanaspatel.whatisthat.ui.screens.CameraScreen
 import com.mohammedanaspatel.whatisthat.ui.screens.ErrorScreen
+import com.mohammedanaspatel.whatisthat.ui.screens.HistoryScreen
 import com.mohammedanaspatel.whatisthat.ui.screens.ResultScreen
 import com.mohammedanaspatel.whatisthat.ui.screens.ScanningScreen
 import com.mohammedanaspatel.whatisthat.ui.screens.StumpedScreen
@@ -49,6 +52,7 @@ sealed class Screen {
     data class Result(val result: ScanResult, val bitmap: Bitmap) : Screen()
     data class Unknown(val bitmap: Bitmap, val confidencePercent: Int?) : Screen()
     data class Error(val message: String) : Screen()
+    data object History : Screen()
 }
 
 private sealed class ClassifierState {
@@ -73,6 +77,8 @@ fun WhatIsThatApp() {
     var showThemePicker by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
+    val historyStore = remember { ScanHistoryStore(context.applicationContext) }
+    var scanHistory by remember { mutableStateOf<List<ScanHistoryItem>>(historyStore.load()) }
     var classifierState by remember { mutableStateOf<ClassifierState>(ClassifierState.Loading) }
     var classifierLoadAttempt by remember { mutableIntStateOf(0) }
 
@@ -106,6 +112,7 @@ fun WhatIsThatApp() {
                     onCameraError = { message ->
                         currentScreen = Screen.Error(message)
                     },
+                    onOpenHistory = { currentScreen = Screen.History },
                     onOpenThemes = { showThemePicker = true }
                 )
 
@@ -117,6 +124,7 @@ fun WhatIsThatApp() {
                             focusTarget = screen.focusTarget,
                             classifier = null,
                             onResult = { result ->
+                                scanHistory = historyStore.add(result)
                                 currentScreen = Screen.Result(result, screen.bitmap)
                             },
                             onUnknown = { confidence ->
@@ -134,6 +142,7 @@ fun WhatIsThatApp() {
                             focusTarget = screen.focusTarget,
                             classifier = state.classifier,
                             onResult = { result ->
+                                scanHistory = historyStore.add(result)
                                 currentScreen = Screen.Result(result, screen.bitmap)
                             },
                             onUnknown = { confidence ->
@@ -181,6 +190,17 @@ fun WhatIsThatApp() {
                         currentScreen = Screen.Camera
                     },
                     onBackToCamera = { currentScreen = Screen.Camera },
+                    onOpenThemes = { showThemePicker = true }
+                )
+
+                is Screen.History -> HistoryScreen(
+                    theme = currentTheme,
+                    items = scanHistory,
+                    onBack = { currentScreen = Screen.Camera },
+                    onClear = {
+                        historyStore.clear()
+                        scanHistory = emptyList()
+                    },
                     onOpenThemes = { showThemePicker = true }
                 )
             }

@@ -112,6 +112,7 @@ fun CameraScreen(
     theme: Theme,
     onCaptured: (Bitmap, FocusTarget?) -> Unit,
     onCameraError: (String) -> Unit = {},
+    onOpenHistory: () -> Unit = {},
     onOpenThemes: () -> Unit = {}
 ) {
     var showFlash by remember { mutableStateOf(false) }
@@ -199,7 +200,11 @@ fun CameraScreen(
             .background(theme.bg)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            TopBar(theme = theme, onOpenThemes = onOpenThemes)
+            TopBar(
+                theme = theme,
+                onOpenHistory = onOpenHistory,
+                onOpenThemes = onOpenThemes
+            )
 
             Box(
                 modifier = Modifier
@@ -699,7 +704,11 @@ private fun CaptureButton(theme: Theme, onTap: () -> Unit) {
 }
 
 @Composable
-private fun TopBar(theme: Theme, onOpenThemes: () -> Unit) {
+private fun TopBar(
+    theme: Theme,
+    onOpenHistory: () -> Unit,
+    onOpenThemes: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -710,10 +719,30 @@ private fun TopBar(theme: Theme, onOpenThemes: () -> Unit) {
     ) {
         Wordmark(theme = theme)
         Row(verticalAlignment = Alignment.CenterVertically) {
+            HistoryButton(theme = theme, onClick = onOpenHistory)
+            Spacer(modifier = Modifier.width(8.dp))
             ThemeButton(theme = theme, onClick = onOpenThemes)
             Spacer(modifier = Modifier.width(8.dp))
             OfflineBadge(theme = theme)
         }
+    }
+}
+
+@Composable
+private fun HistoryButton(theme: Theme, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(RoundedCornerShape(50))
+            .background(theme.surface)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text = "↺", color = theme.text, fontSize = 18.sp)
     }
 }
 
