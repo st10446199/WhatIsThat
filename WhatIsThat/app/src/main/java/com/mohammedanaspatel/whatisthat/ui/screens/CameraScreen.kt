@@ -203,6 +203,7 @@ fun CameraScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             TopBar(
                 theme = theme,
+                focusTarget = focusTarget,
                 onOpenThemes = onOpenThemes
             )
 
@@ -241,18 +242,7 @@ fun CameraScreen(
                     }
                 }
 
-                ViewfinderCorners(accentColor = theme.accent)
-
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = focusTarget != null,
-                    enter = fadeIn() + scaleIn(initialScale = 0.92f),
-                    exit = fadeOut() + scaleOut(targetScale = 0.92f),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 14.dp)
-                ) {
-                    AiTargetBadge(theme = theme)
-                }
+                CameraCornerAccents(theme = theme)
 
                 Text(
                     text = if (focusTarget == null) {
@@ -260,15 +250,13 @@ fun CameraScreen(
                     } else {
                         "Tap elsewhere to retarget"
                     },
-                    color = Color.White.copy(alpha = 0.82f),
-                    fontSize = 12.sp,
+                    color = Color.White.copy(alpha = 0.74f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .clip(RoundedCornerShape(50))
-                        .background(Color.Black.copy(alpha = 0.44f))
-                        .padding(horizontal = 14.dp, vertical = 7.dp)
-                        .offset(y = 26.dp)
+                        .padding(horizontal = 20.dp, vertical = 18.dp)
                 )
             }
 
@@ -499,17 +487,16 @@ private fun CameraPreview(
             FocusRing(offsetPx = point)
         }
 
-        // Reset control stays separate from the AI target badge so the two never overlap.
         if (focusPoint != null) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 14.dp, end = 14.dp)
+                    .align(Alignment.TopCenter)
+                    .padding(top = 14.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.Black.copy(alpha = 0.58f))
+                    .background(Color.Black.copy(alpha = 0.62f))
                     .border(
                         width = 1.dp,
-                        color = Color.White.copy(alpha = 0.18f),
+                        color = Color.White.copy(alpha = 0.22f),
                         shape = RoundedCornerShape(50)
                     )
                     .clickable(
@@ -521,11 +508,11 @@ private fun CameraPreview(
                             onFocusTargetChanged(null)
                         }
                     )
-                    .padding(horizontal = 11.dp, vertical = 7.dp),
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "×  Reset",
+                    text = "Reset Target",
                     color = Color.White,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold
@@ -644,50 +631,130 @@ private fun PermissionFallback(theme: Theme, onRequestPermission: () -> Unit) {
 
 /** Four pulsing corner brackets - fades between 0.5 and 1.0 alpha on a loop. */
 @Composable
-private fun ViewfinderCorners(accentColor: Color) {
-    val transition = rememberInfiniteTransition(label = "cornerPulse")
+private fun CameraCornerAccents(theme: Theme) {
+    val transition = rememberInfiniteTransition(label = "cameraCornerPulse")
+
     val alpha by transition.animateFloat(
-        initialValue = 0.5f,
-        targetValue = 1f,
+        initialValue = 0.38f,
+        targetValue = 0.78f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = FastOutSlowInEasing),
+            animation = tween(
+                durationMillis = 1500,
+                easing = FastOutSlowInEasing
+            ),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "cornerAlpha"
+        label = "cameraCornerAlpha"
     )
 
-    val cornerSize = 32.dp
-    val strokeWidth = 3.dp
-    val color = accentColor.copy(alpha = alpha)
+    val color = theme.accent.copy(alpha = alpha)
+    val length = 20.dp
+    val thickness = 2.dp
+    val inset = 14.dp
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            Modifier.align(Alignment.TopStart).size(cornerSize)
-                .border(
-                    androidx.compose.foundation.BorderStroke(strokeWidth, color),
-                    RoundedCornerShape(topStart = 8.dp)
-                )
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(28.dp))
+    ) {
+        CornerAccent(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = inset, top = inset),
+            color = color,
+            length = length,
+            thickness = thickness,
+            horizontalAlignment = Alignment.Start,
+            verticalAlignment = Alignment.Top
         )
-        Box(
-            Modifier.align(Alignment.TopEnd).size(cornerSize)
-                .border(
-                    androidx.compose.foundation.BorderStroke(strokeWidth, color),
-                    RoundedCornerShape(topEnd = 8.dp)
-                )
+
+        CornerAccent(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = inset, top = inset),
+            color = color,
+            length = length,
+            thickness = thickness,
+            horizontalAlignment = Alignment.End,
+            verticalAlignment = Alignment.Top
         )
-        Box(
-            Modifier.align(Alignment.BottomStart).size(cornerSize)
-                .border(
-                    androidx.compose.foundation.BorderStroke(strokeWidth, color),
-                    RoundedCornerShape(bottomStart = 8.dp)
-                )
+
+        CornerAccent(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = inset, bottom = inset),
+            color = color,
+            length = length,
+            thickness = thickness,
+            horizontalAlignment = Alignment.Start,
+            verticalAlignment = Alignment.Bottom
         )
+
+        CornerAccent(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = inset, bottom = inset),
+            color = color,
+            length = length,
+            thickness = thickness,
+            horizontalAlignment = Alignment.End,
+            verticalAlignment = Alignment.Bottom
+        )
+    }
+}
+
+@Composable
+private fun CornerAccent(
+    modifier: Modifier,
+    color: Color,
+    length: androidx.compose.ui.unit.Dp,
+    thickness: androidx.compose.ui.unit.Dp,
+    horizontalAlignment: Alignment.Horizontal,
+    verticalAlignment: Alignment.Vertical
+) {
+    Box(
+        modifier = modifier.size(length)
+    ) {
         Box(
-            Modifier.align(Alignment.BottomEnd).size(cornerSize)
-                .border(
-                    androidx.compose.foundation.BorderStroke(strokeWidth, color),
-                    RoundedCornerShape(bottomEnd = 8.dp)
+            modifier = Modifier
+                .width(length)
+                .height(thickness)
+                .align(
+                    when {
+                        horizontalAlignment == Alignment.Start &&
+                            verticalAlignment == Alignment.Top -> Alignment.TopStart
+
+                        horizontalAlignment == Alignment.End &&
+                            verticalAlignment == Alignment.Top -> Alignment.TopEnd
+
+                        horizontalAlignment == Alignment.Start &&
+                            verticalAlignment == Alignment.Bottom -> Alignment.BottomStart
+
+                        else -> Alignment.BottomEnd
+                    }
                 )
+                .background(color)
+        )
+
+        Box(
+            modifier = Modifier
+                .width(thickness)
+                .height(length)
+                .align(
+                    when {
+                        horizontalAlignment == Alignment.Start &&
+                            verticalAlignment == Alignment.Top -> Alignment.TopStart
+
+                        horizontalAlignment == Alignment.End &&
+                            verticalAlignment == Alignment.Top -> Alignment.TopEnd
+
+                        horizontalAlignment == Alignment.Start &&
+                            verticalAlignment == Alignment.Bottom -> Alignment.BottomStart
+
+                        else -> Alignment.BottomEnd
+                    }
+                )
+                .background(color)
         )
     }
 }
@@ -744,22 +811,26 @@ private fun CaptureButton(theme: Theme, onTap: () -> Unit) {
 @Composable
 private fun TopBar(
     theme: Theme,
+    focusTarget: FocusTarget?,
     onOpenThemes: () -> Unit
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .height(104.dp)
             .padding(horizontal = 20.dp)
-            .padding(top = 42.dp, bottom = 14.dp)
+            .padding(top = 30.dp)
     ) {
         ThemeButton(
             theme = theme,
             onClick = onOpenThemes,
-            modifier = Modifier.align(Alignment.CenterStart)
+            modifier = Modifier.align(Alignment.TopStart)
         )
 
         Column(
-            modifier = Modifier.align(Alignment.Center),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 1.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Wordmark(theme = theme)
@@ -767,11 +838,127 @@ private fun TopBar(
             OfflineBadge(theme = theme)
         }
 
-        Spacer(
-            modifier = Modifier
-                .size(36.dp)
-                .align(Alignment.CenterEnd)
+        AiStatusIndicator(
+            theme = theme,
+            focusTarget = focusTarget,
+            modifier = Modifier.align(Alignment.TopEnd)
         )
+    }
+}
+
+@Composable
+private fun AiStatusIndicator(
+    theme: Theme,
+    focusTarget: FocusTarget?,
+    modifier: Modifier = Modifier
+) {
+    var showTargetMessage by remember { mutableStateOf(false) }
+
+    LaunchedEffect(focusTarget) {
+        if (focusTarget != null) {
+            showTargetMessage = true
+            delay(5000)
+            showTargetMessage = false
+        } else {
+            showTargetMessage = false
+        }
+    }
+
+    val transition = rememberInfiniteTransition(label = "aiStatusPulse")
+    val pulseAlpha by transition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 1200,
+                easing = FastOutSlowInEasing
+            ),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "aiStatusAlpha"
+    )
+
+    val glowAlpha = if (focusTarget != null) {
+        pulseAlpha
+    } else {
+        0.28f
+    }
+
+    Column(
+        modifier = modifier.width(112.dp),
+        horizontalAlignment = Alignment.End
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .graphicsLayer {
+                    alpha = 0.85f + glowAlpha * 0.15f
+                    shadowElevation = if (focusTarget != null) {
+                        18f * glowAlpha
+                    } else {
+                        4f
+                    }
+                }
+                .clip(RoundedCornerShape(14.dp))
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            theme.accent.copy(alpha = 0.82f * glowAlpha),
+                            theme.accent.copy(alpha = 0.20f),
+                            Color.Transparent
+                        )
+                    )
+                )
+                .border(
+                    width = 1.dp,
+                    color = theme.accent.copy(alpha = 0.42f + glowAlpha * 0.40f),
+                    shape = RoundedCornerShape(14.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.size(22.dp)) {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val longRadius = size.minDimension * 0.44f
+                val shortRadius = size.minDimension * 0.14f
+
+                drawLine(
+                    color = theme.accent,
+                    start = Offset(center.x, center.y - longRadius),
+                    end = Offset(center.x, center.y + longRadius),
+                    strokeWidth = 2.2.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+
+                drawLine(
+                    color = theme.accent,
+                    start = Offset(center.x - longRadius, center.y),
+                    end = Offset(center.x + longRadius, center.y),
+                    strokeWidth = 2.2.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+
+                drawCircle(
+                    color = theme.text.copy(alpha = 0.95f),
+                    radius = shortRadius,
+                    center = center
+                )
+            }
+        }
+
+        androidx.compose.animation.AnimatedVisibility(
+            visible = showTargetMessage,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Text(
+                text = "AI target selected",
+                color = theme.accent,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.End,
+                modifier = Modifier.padding(top = 5.dp)
+            )
+        }
     }
 }
 
@@ -838,37 +1025,6 @@ private fun RecentScansButton(
     }
 }
 
-@Composable
-private fun AiTargetBadge(theme: Theme) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = 0.58f))
-            .border(
-                width = 1.dp,
-                color = theme.accent.copy(alpha = 0.8f),
-                shape = RoundedCornerShape(50)
-            )
-            .padding(horizontal = 13.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "✦",
-            color = theme.accent,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.width(7.dp))
-        Text(
-            text = "AI target selected",
-            color = Color.White,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-    }
-}
-
-/** Opens the theme picker bottom sheet (wired in MainActivity via onOpenThemes). */
 @Composable
 internal fun ThemeButton(
     theme: Theme,
