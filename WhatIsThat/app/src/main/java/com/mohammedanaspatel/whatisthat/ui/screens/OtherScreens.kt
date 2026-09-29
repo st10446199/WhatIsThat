@@ -32,7 +32,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.mohammedanaspatel.whatisthat.data.CONFIDENCE_THRESHOLD
 import com.mohammedanaspatel.whatisthat.data.FocusTarget
 import com.mohammedanaspatel.whatisthat.data.ScanResult
 import com.mohammedanaspatel.whatisthat.data.ScanHistoryItem
@@ -87,12 +86,12 @@ fun ScanningScreen(
                 "The AI model could not analyze this photo. Please try another scan."
             )
 
-            prediction.second < CONFIDENCE_THRESHOLD -> onUnknown(prediction.second)
+            !prediction.isReliable -> onUnknown(prediction.confidencePercent)
 
             else -> onResult(
                 ScanResult(
-                    label = prediction.first,
-                    confidencePercent = prediction.second,
+                    label = prediction.label,
+                    confidencePercent = prediction.confidencePercent,
                     emoji = "🔍"
                 )
             )

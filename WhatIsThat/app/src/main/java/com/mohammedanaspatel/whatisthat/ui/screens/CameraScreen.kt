@@ -202,7 +202,6 @@ fun CameraScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             TopBar(
                 theme = theme,
-                onOpenHistory = onOpenHistory,
                 onOpenThemes = onOpenThemes
             )
 
@@ -299,6 +298,11 @@ fun CameraScreen(
                     color = theme.textMuted,
                     fontSize = 12.sp,
                     letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+                RecentScansButton(
+                    theme = theme,
+                    onClick = onOpenHistory
                 )
             }
         }
@@ -706,7 +710,6 @@ private fun CaptureButton(theme: Theme, onTap: () -> Unit) {
 @Composable
 private fun TopBar(
     theme: Theme,
-    onOpenHistory: () -> Unit,
     onOpenThemes: () -> Unit
 ) {
     Row(
@@ -719,8 +722,6 @@ private fun TopBar(
     ) {
         Wordmark(theme = theme)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            HistoryButton(theme = theme, onClick = onOpenHistory)
-            Spacer(modifier = Modifier.width(8.dp))
             ThemeButton(theme = theme, onClick = onOpenThemes)
             Spacer(modifier = Modifier.width(8.dp))
             OfflineBadge(theme = theme)
@@ -729,20 +730,40 @@ private fun TopBar(
 }
 
 @Composable
-private fun HistoryButton(theme: Theme, onClick: () -> Unit) {
-    Box(
+private fun RecentScansButton(
+    theme: Theme,
+    onClick: () -> Unit
+) {
+    Row(
         modifier = Modifier
-            .size(32.dp)
             .clip(RoundedCornerShape(50))
             .background(theme.surface)
+            .border(
+                width = 1.dp,
+                color = theme.borderSubtle,
+                shape = RoundedCornerShape(50)
+            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onClick
-            ),
-        contentAlignment = Alignment.Center
+            )
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = "↺", color = theme.text, fontSize = 18.sp)
+        Text(
+            text = "↺",
+            color = theme.accent,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = "Recent scans",
+            color = theme.text,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
 

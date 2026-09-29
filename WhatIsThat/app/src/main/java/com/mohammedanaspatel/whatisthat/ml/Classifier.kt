@@ -30,6 +30,14 @@ import kotlin.math.roundToInt
  * The implementation still reads the tensor dimensions at runtime so the
  * preprocessing stays tied to the actual model rather than a magic size.
  */
+data class ClassificationPrediction(
+    val label: String,
+    val confidencePercent: Int,
+    val isReliable: Boolean,
+    val agreementCount: Int,
+    val marginPercent: Int
+)
+
 class Classifier(context: Context) {
 
     companion object {
@@ -106,10 +114,14 @@ class Classifier(context: Context) {
      * includes lots of irrelevant background. We therefore centre-crop to the
      * model's aspect ratio first, then resize.
      */
-    fun classify(bitmap: Bitmap, focusTarget: FocusTarget? = null): Pair<String, Int>? {
+    fun classify(
+        bitmap: Bitmap,
+        focusTarget: FocusTarget? = null
+    ): ClassificationPrediction? {
         return try {
             val crops = buildAnalysisCrops(bitmap, focusTarget)
             val combinedScores = FloatArray(outputClassCount)
+            val cropWinners = mutableListOf<Int>()
 
             crops.forEach { weightedCrop ->
                 val resized = Bitmap.createScaledBitmap(
@@ -121,6 +133,8 @@ class Classifier(context: Context) {
 
                 val inputBuffer = bitmapToByteBuffer(resized)
                 val scores = runInference(inputBuffer)
+
+                findBestFloatIndex(scores)?.let { cropWinners += it }
 
                 for (index in scores.indices) {
                     if (index != backgroundIndex) {
@@ -137,12 +151,48 @@ class Classifier(context: Context) {
                 }
             }
 
-            val bestIndex = findBestFloatIndex(combinedScores) ?: return null
-            val confidence = (combinedScores[bestIndex] * 100f)
+            val ranked = combinedScores.indices
+                .asSequence()
+                .filter { it != backgroundIndex }
+                .sortedByDescending { combinedScores[it] }
+                .take(2)
+                .toList()
+
+            val bestIndex = ranked.firstOrNull() ?: return null
+            val secondIndex = ranked.getOrNull(1)
+
+            val bestScore = combinedScores[bestIndex].coerceAtLeast(0f)
+            val secondScore = secondIndex
+                ?.let { combinedScores[it].coerceAtLeast(0f) }
+                ?: 0f
+
+            val confidence = (bestScore * 100f)
                 .roundToInt()
                 .coerceIn(0, 100)
 
-            val prediction = friendlyLabel(bestIndex) to confidence
+            val marginPercent = ((bestScore - secondScore) * 100f)
+                .roundToInt()
+                .coerceAtLeast(0)
+
+            val agreementCount = cropWinners.count { it == bestIndex }
+
+            val hasEnoughScore = bestScore >= 0.18f
+            val hasUsefulMargin = (bestScore - secondScore) >= 0.035f
+            val hasCropAgreement = agreementCount >= 2
+            val exceptionallyStrong = bestScore >= 0.52f
+
+            val reliable = hasEnoughScore &&
+                (hasUsefulMargin || exceptionallyStrong) &&
+                (hasCropAgreement || exceptionallyStrong)
+
+            val prediction = ClassificationPrediction(
+                label = friendlyLabel(bestIndex),
+                confidencePercent = confidence,
+                isReliable = reliable,
+                agreementCount = agreementCount,
+                marginPercent = marginPercent
+            )
+
             val mode = if (focusTarget == null) {
                 "multi scale full image"
             } else {
@@ -151,7 +201,11 @@ class Classifier(context: Context) {
 
             Log.d(
                 TAG,
-                "Prediction: ${prediction.first} (${prediction.second}%) using $mode"
+                "Prediction: ${prediction.label} " +
+                    "(${prediction.confidencePercent}%), " +
+                    "reliable=${prediction.isReliable}, " +
+                    "agreement=${prediction.agreementCount}/${crops.size}, " +
+                    "margin=${prediction.marginPercent}% using $mode"
             )
 
             logTopPredictions(combinedScores)
@@ -425,12 +479,25 @@ class Classifier(context: Context) {
 
     /** ImageNet labels often contain comma-separated synonyms; show the shortest useful name. */
     private fun friendlyLabel(index: Int): String {
-        return labels[index]
+        val rawLabel = labels[index]
             .substringBefore(',')
             .trim()
-            .replaceFirstChar { character ->
-                if (character.isLowerCase()) character.titlecase() else character.toString()
+
+        val friendlier = when (rawLabel.lowercase()) {
+            "hand blower" -> "Hair dryer"
+            "cellular telephone" -> "Mobile phone"
+            "computer keyboard" -> "Keyboard"
+            "notebook" -> "Laptop"
+            else -> rawLabel
+        }
+
+        return friendlier.replaceFirstChar { character ->
+            if (character.isLowerCase()) {
+                character.titlecase()
+            } else {
+                character.toString()
             }
+        }
     }
 
     fun close() {
