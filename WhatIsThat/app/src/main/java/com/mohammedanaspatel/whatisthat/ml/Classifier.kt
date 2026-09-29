@@ -108,66 +108,266 @@ class Classifier(context: Context) {
      */
     fun classify(bitmap: Bitmap, focusTarget: FocusTarget? = null): Pair<String, Int>? {
         return try {
-            val cropped = if (focusTarget == null) {
-                centerCropToModelAspectRatio(bitmap)
+            val crops = buildAnalysisCrops(bitmap, focusTarget)
+            val combinedScores = FloatArray(outputClassCount)
+
+            crops.forEach { weightedCrop ->
+                val resized = Bitmap.createScaledBitmap(
+                    weightedCrop.bitmap,
+                    inputWidth,
+                    inputHeight,
+                    true
+                )
+
+                val inputBuffer = bitmapToByteBuffer(resized)
+                val scores = runInference(inputBuffer)
+
+                for (index in scores.indices) {
+                    if (index != backgroundIndex) {
+                        combinedScores[index] += scores[index] * weightedCrop.weight
+                    }
+                }
+
+                if (resized !== weightedCrop.bitmap && !resized.isRecycled) {
+                    resized.recycle()
+                }
+
+                if (weightedCrop.bitmap !== bitmap && !weightedCrop.bitmap.isRecycled) {
+                    weightedCrop.bitmap.recycle()
+                }
+            }
+
+            val bestIndex = findBestFloatIndex(combinedScores) ?: return null
+            val confidence = (combinedScores[bestIndex] * 100f)
+                .roundToInt()
+                .coerceIn(0, 100)
+
+            val prediction = friendlyLabel(bestIndex) to confidence
+            val mode = if (focusTarget == null) {
+                "multi scale full image"
             } else {
-                cropAroundFocusTarget(bitmap, focusTarget)
-            }
-            val resized = Bitmap.createScaledBitmap(cropped, inputWidth, inputHeight, true)
-            val inputBuffer = bitmapToByteBuffer(resized)
-
-            val prediction = when (outputDataType) {
-                DataType.FLOAT32 -> classifyFloat(inputBuffer)
-                DataType.UINT8 -> classifyUInt8(inputBuffer)
-                else -> throw IllegalStateException("Unsupported output type: $outputDataType")
+                "multi scale focus target"
             }
 
-            if (resized !== cropped && !resized.isRecycled) {
-                resized.recycle()
-            }
-            if (cropped !== bitmap && !cropped.isRecycled) {
-                cropped.recycle()
-            }
+            Log.d(
+                TAG,
+                "Prediction: ${prediction.first} (${prediction.second}%) using $mode"
+            )
 
-            prediction?.also { (label, confidence) ->
-                val mode = if (focusTarget == null) "full image" else "focus target"
-                Log.d(TAG, "Prediction: $label ($confidence%) using $mode")
-            }
+            logTopPredictions(combinedScores)
+            prediction
         } catch (e: Exception) {
             Log.e(TAG, "Classification failed", e)
             null
         }
     }
 
-    private fun classifyFloat(inputBuffer: ByteBuffer): Pair<String, Int>? {
-        val output = Array(1) { FloatArray(outputClassCount) }
-        interpreter.run(inputBuffer, output)
-
-        val bestIndex = findBestFloatIndex(output[0]) ?: return null
-        val confidence = (output[0][bestIndex] * 100f)
-            .roundToInt()
-            .coerceIn(0, 100)
-
-        return friendlyLabel(bestIndex) to confidence
-    }
-
-    private fun classifyUInt8(inputBuffer: ByteBuffer): Pair<String, Int>? {
-        val output = Array(1) { ByteArray(outputClassCount) }
-        interpreter.run(inputBuffer, output)
-
-        val bestIndex = findBestUInt8Index(output[0]) ?: return null
-        val rawScore = output[0][bestIndex].toInt() and 0xFF
-        val confidence = ((rawScore / 255f) * 100f)
-            .roundToInt()
-            .coerceIn(0, 100)
-
-        return friendlyLabel(bestIndex) to confidence
-    }
+    private data class WeightedCrop(
+        val bitmap: Bitmap,
+        val weight: Float
+    )
 
     /**
-     * Converts the image to the input tensor format expected by the model.
-     * The bundled FLOAT32 MobileNetV2 uses RGB values normalized to -1..1.
+     * One crop is often not enough for a real camera image.
+     *
+     * For a user selected target we analyse the tapped area at three zoom
+     * levels plus a small amount of global context. This makes recognition
+     * much less sensitive to the exact tap location and object size.
+     *
+     * Without a target we analyse three centre crops at different scales.
      */
+    private fun buildAnalysisCrops(
+        bitmap: Bitmap,
+        focusTarget: FocusTarget?
+    ): List<WeightedCrop> {
+        return if (focusTarget == null) {
+            listOf(
+                WeightedCrop(
+                    cropToModelAspectRatio(bitmap, 1.00f, 0.5f, 0.5f),
+                    0.45f
+                ),
+                WeightedCrop(
+                    cropToModelAspectRatio(bitmap, 0.78f, 0.5f, 0.5f),
+                    0.35f
+                ),
+                WeightedCrop(
+                    cropToModelAspectRatio(bitmap, 0.58f, 0.5f, 0.5f),
+                    0.20f
+                )
+            )
+        } else {
+            val mappedTarget = mapFocusTargetToBitmap(bitmap, focusTarget)
+
+            listOf(
+                WeightedCrop(
+                    cropToModelAspectRatio(
+                        bitmap,
+                        0.34f,
+                        mappedTarget.first,
+                        mappedTarget.second
+                    ),
+                    0.40f
+                ),
+                WeightedCrop(
+                    cropToModelAspectRatio(
+                        bitmap,
+                        0.50f,
+                        mappedTarget.first,
+                        mappedTarget.second
+                    ),
+                    0.32f
+                ),
+                WeightedCrop(
+                    cropToModelAspectRatio(
+                        bitmap,
+                        0.68f,
+                        mappedTarget.first,
+                        mappedTarget.second
+                    ),
+                    0.20f
+                ),
+                WeightedCrop(
+                    cropToModelAspectRatio(bitmap, 1.00f, 0.5f, 0.5f),
+                    0.08f
+                )
+            )
+        }
+    }
+
+    private fun runInference(inputBuffer: ByteBuffer): FloatArray {
+        return when (outputDataType) {
+            DataType.FLOAT32 -> {
+                val output = Array(1) { FloatArray(outputClassCount) }
+                interpreter.run(inputBuffer, output)
+                output[0]
+            }
+
+            DataType.UINT8 -> {
+                val output = Array(1) { ByteArray(outputClassCount) }
+                interpreter.run(inputBuffer, output)
+
+                FloatArray(outputClassCount) { index ->
+                    (output[0][index].toInt() and 0xFF) / 255f
+                }
+            }
+
+            else -> throw IllegalStateException(
+                "Unsupported output type: $outputDataType"
+            )
+        }
+    }
+
+    private fun mapFocusTargetToBitmap(
+        bitmap: Bitmap,
+        focusTarget: FocusTarget
+    ): Pair<Float, Float> {
+        val bitmapWidth = bitmap.width.toFloat()
+        val bitmapHeight = bitmap.height.toFloat()
+        val sourceAspectRatio = bitmapWidth / bitmapHeight
+        val previewAspectRatio = focusTarget.previewAspectRatio.coerceAtLeast(0.01f)
+
+        val mappedXRatio: Float
+        val mappedYRatio: Float
+
+        if (sourceAspectRatio > previewAspectRatio) {
+            val visibleWidthFraction =
+                (previewAspectRatio / sourceAspectRatio).coerceIn(0f, 1f)
+            val croppedSideFraction = (1f - visibleWidthFraction) / 2f
+
+            mappedXRatio = (
+                croppedSideFraction +
+                    focusTarget.xRatio.coerceIn(0f, 1f) * visibleWidthFraction
+                ).coerceIn(0f, 1f)
+
+            mappedYRatio = focusTarget.yRatio.coerceIn(0f, 1f)
+        } else if (sourceAspectRatio < previewAspectRatio) {
+            val visibleHeightFraction =
+                (sourceAspectRatio / previewAspectRatio).coerceIn(0f, 1f)
+            val croppedTopFraction = (1f - visibleHeightFraction) / 2f
+
+            mappedXRatio = focusTarget.xRatio.coerceIn(0f, 1f)
+
+            mappedYRatio = (
+                croppedTopFraction +
+                    focusTarget.yRatio.coerceIn(0f, 1f) * visibleHeightFraction
+                ).coerceIn(0f, 1f)
+        } else {
+            mappedXRatio = focusTarget.xRatio.coerceIn(0f, 1f)
+            mappedYRatio = focusTarget.yRatio.coerceIn(0f, 1f)
+        }
+
+        return mappedXRatio to mappedYRatio
+    }
+
+    private fun cropToModelAspectRatio(
+        bitmap: Bitmap,
+        scale: Float,
+        centerXRatio: Float,
+        centerYRatio: Float
+    ): Bitmap {
+        val safeScale = scale.coerceIn(0.2f, 1f)
+        val targetRatio = inputWidth.toFloat() / inputHeight.toFloat()
+        val maximumCropWidth = bitmap.width * safeScale
+        val maximumCropHeight = bitmap.height * safeScale
+
+        val cropWidth: Int
+        val cropHeight: Int
+
+        if (maximumCropWidth / maximumCropHeight > targetRatio) {
+            cropHeight = maximumCropHeight
+                .roundToInt()
+                .coerceIn(1, bitmap.height)
+
+            cropWidth = (cropHeight * targetRatio)
+                .roundToInt()
+                .coerceIn(1, bitmap.width)
+        } else {
+            cropWidth = maximumCropWidth
+                .roundToInt()
+                .coerceIn(1, bitmap.width)
+
+            cropHeight = (cropWidth / targetRatio)
+                .roundToInt()
+                .coerceIn(1, bitmap.height)
+        }
+
+        val centerX = (
+            centerXRatio.coerceIn(0f, 1f) * bitmap.width
+            ).roundToInt()
+
+        val centerY = (
+            centerYRatio.coerceIn(0f, 1f) * bitmap.height
+            ).roundToInt()
+
+        val maximumLeft = (bitmap.width - cropWidth).coerceAtLeast(0)
+        val maximumTop = (bitmap.height - cropHeight).coerceAtLeast(0)
+
+        val left = (centerX - cropWidth / 2).coerceIn(0, maximumLeft)
+        val top = (centerY - cropHeight / 2).coerceIn(0, maximumTop)
+
+        return Bitmap.createBitmap(
+            bitmap,
+            left,
+            top,
+            cropWidth,
+            cropHeight
+        )
+    }
+
+    private fun logTopPredictions(scores: FloatArray) {
+        scores.indices
+            .asSequence()
+            .filter { it != backgroundIndex }
+            .sortedByDescending { scores[it] }
+            .take(3)
+            .joinToString { index ->
+                "${friendlyLabel(index)}=${(scores[index] * 100f).roundToInt()}%"
+            }
+            .also { topPredictions ->
+                Log.d(TAG, "Top predictions: $topPredictions")
+            }
+    }
+
     private fun bitmapToByteBuffer(bitmap: Bitmap): ByteBuffer {
         val bytesPerChannel = when (inputDataType) {
             DataType.FLOAT32 -> 4
@@ -207,74 +407,6 @@ class Classifier(context: Context) {
         return buffer
     }
 
-    private fun cropAroundFocusTarget(bitmap: Bitmap, focusTarget: FocusTarget): Bitmap {
-        val bitmapWidth = bitmap.width.toFloat()
-        val bitmapHeight = bitmap.height.toFloat()
-        val sourceAspectRatio = bitmapWidth / bitmapHeight
-        val previewAspectRatio = focusTarget.previewAspectRatio.coerceAtLeast(0.01f)
-
-        val mappedXRatio: Float
-        val mappedYRatio: Float
-
-        if (sourceAspectRatio > previewAspectRatio) {
-            val visibleWidthFraction = (previewAspectRatio / sourceAspectRatio).coerceIn(0f, 1f)
-            val croppedSideFraction = 1f.minus(visibleWidthFraction) / 2f
-            mappedXRatio = (croppedSideFraction +
-                focusTarget.xRatio * visibleWidthFraction).coerceIn(0f, 1f)
-            mappedYRatio = focusTarget.yRatio.coerceIn(0f, 1f)
-        } else if (sourceAspectRatio < previewAspectRatio) {
-            val visibleHeightFraction = (sourceAspectRatio / previewAspectRatio).coerceIn(0f, 1f)
-            mappedXRatio = focusTarget.xRatio.coerceIn(0f, 1f)
-            val croppedTopFraction = 1f.minus(visibleHeightFraction) / 2f
-            mappedYRatio = (croppedTopFraction +
-                focusTarget.yRatio * visibleHeightFraction).coerceIn(0f, 1f)
-        } else {
-            mappedXRatio = focusTarget.xRatio.coerceIn(0f, 1f)
-            mappedYRatio = focusTarget.yRatio.coerceIn(0f, 1f)
-        }
-
-        val targetRatio = inputWidth.toFloat() / inputHeight.toFloat()
-        val maximumCropWidth = bitmapWidth * 0.62f
-        val maximumCropHeight = bitmapHeight * 0.62f
-
-        val cropWidth: Int
-        val cropHeight: Int
-
-        if (maximumCropWidth / maximumCropHeight > targetRatio) {
-            cropHeight = maximumCropHeight.roundToInt().coerceAtLeast(1)
-            cropWidth = (cropHeight * targetRatio).roundToInt().coerceAtLeast(1)
-        } else {
-            cropWidth = maximumCropWidth.roundToInt().coerceAtLeast(1)
-            cropHeight = (cropWidth / targetRatio).roundToInt().coerceAtLeast(1)
-        }
-
-        val centerX = (mappedXRatio * bitmapWidth).roundToInt()
-        val centerY = (mappedYRatio * bitmapHeight).roundToInt()
-        val maximumLeft = bitmap.width.minus(cropWidth).coerceAtLeast(0)
-        val maximumTop = bitmap.height.minus(cropHeight).coerceAtLeast(0)
-        val left = centerX.minus(cropWidth / 2).coerceIn(0, maximumLeft)
-        val top = centerY.minus(cropHeight / 2).coerceIn(0, maximumTop)
-
-        return Bitmap.createBitmap(bitmap, left, top, cropWidth, cropHeight)
-    }
-
-    private fun centerCropToModelAspectRatio(bitmap: Bitmap): Bitmap {
-        val targetRatio = inputWidth.toFloat() / inputHeight.toFloat()
-        val bitmapRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
-
-        return if (bitmapRatio > targetRatio) {
-            val cropWidth = (bitmap.height * targetRatio).roundToInt().coerceAtMost(bitmap.width)
-            val left = ((bitmap.width - cropWidth) / 2).coerceAtLeast(0)
-            Bitmap.createBitmap(bitmap, left, 0, cropWidth, bitmap.height)
-        } else if (bitmapRatio < targetRatio) {
-            val cropHeight = (bitmap.width / targetRatio).roundToInt().coerceAtMost(bitmap.height)
-            val top = ((bitmap.height - cropHeight) / 2).coerceAtLeast(0)
-            Bitmap.createBitmap(bitmap, 0, top, bitmap.width, cropHeight)
-        } else {
-            bitmap
-        }
-    }
-
     private fun findBestFloatIndex(scores: FloatArray): Int? {
         var bestIndex = -1
         var bestScore = Float.NEGATIVE_INFINITY
@@ -290,21 +422,6 @@ class Classifier(context: Context) {
         return bestIndex.takeIf { it >= 0 }
     }
 
-    private fun findBestUInt8Index(scores: ByteArray): Int? {
-        var bestIndex = -1
-        var bestScore = Int.MIN_VALUE
-
-        for (index in scores.indices) {
-            if (index == backgroundIndex) continue
-            val score = scores[index].toInt() and 0xFF
-            if (score > bestScore) {
-                bestScore = score
-                bestIndex = index
-            }
-        }
-
-        return bestIndex.takeIf { it >= 0 }
-    }
 
     /** ImageNet labels often contain comma-separated synonyms; show the shortest useful name. */
     private fun friendlyLabel(index: Int): String {
