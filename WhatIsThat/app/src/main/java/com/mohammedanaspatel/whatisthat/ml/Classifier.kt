@@ -1,403 +1,549 @@
 /*
  * WhatIsThat
  * Copyright (c) 2026 Mohammed Anas Patel
- * All Rights Reserved — see LICENSE file for details.
- * https://github.com/[your-username]/WhatIsThat
+ * All Rights Reserved. See LICENSE file for details.
+ * https://github.com/[your username]/WhatIsThat
  */
 
 package com.mohammedanaspatel.whatisthat.ml
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.util.Log
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector
 import com.mohammedanaspatel.whatisthat.data.FocusTarget
-import org.tensorflow.lite.DataType
-import org.tensorflow.lite.Interpreter
-import java.io.FileInputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.MappedByteBuffer
-import java.nio.channels.FileChannel
+import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
-/**
- * Local TensorFlow Lite image classifier used by WhatIsThat.
- *
- * The bundled model is MobileNetV2 trained on ImageNet. It expects a
- * 224 x 224 RGB FLOAT32 image normalized to the range -1..1 and produces
- * 1001 probabilities, where index 0 is the ImageNet background class.
- *
- * The implementation still reads the tensor dimensions at runtime so the
- * preprocessing stays tied to the actual model rather than a magic size.
- */
 data class ClassificationPrediction(
     val label: String,
     val confidencePercent: Int,
     val isReliable: Boolean,
-    val agreementCount: Int,
-    val marginPercent: Int
+    val agreementCount: Int = 1,
+    val marginPercent: Int = 0
+)
+
+private data class DetectedCandidate(
+    val label: String,
+    val score: Float,
+    val box: RectF
 )
 
 class Classifier(context: Context) {
 
     companion object {
-        private const val TAG = "WhatIsThatClassifier"
+        private const val TAG = "WhatIsThatDetector"
+        private const val DETECTOR_MODEL = "efficientdet_lite4.tflite"
+
+        /*
+         * Keep the detector threshold fairly low so small objects are not
+         * discarded before our own selection logic can inspect them.
+         *
+         * Nothing below the reliability thresholds is shown as identified.
+         */
+        private const val DETECTOR_SCORE_THRESHOLD = 0.12f
+        private const val GENERAL_RELIABLE_THRESHOLD = 0.30f
+        private const val FOCUSED_RELIABLE_THRESHOLD = 0.22f
+        private const val STRONG_DETECTION_THRESHOLD = 0.48f
+        private const val MAX_RESULTS = 15
     }
 
-    private val interpreter: Interpreter
-    private val labels: List<String>
-    private val inputWidth: Int
-    private val inputHeight: Int
-    private val inputDataType: DataType
-    private val outputDataType: DataType
-    private val outputClassCount: Int
-    private val backgroundIndex: Int?
+    private val objectDetector: ObjectDetector
 
     init {
-        val modelBuffer = loadModelFile(context, "model.tflite")
-        interpreter = Interpreter(modelBuffer, Interpreter.Options().apply {
-            setNumThreads(4)
-        })
+        val baseOptions = BaseOptions.builder()
+            .setModelAssetPath(DETECTOR_MODEL)
+            .setDelegate(Delegate.CPU)
+            .build()
 
-        labels = context.assets
-            .open("labels.txt")
-            .bufferedReader()
-            .useLines { lines -> lines.map { it.trim() }.filter { it.isNotEmpty() }.toList() }
+        val detectorOptions = ObjectDetector.ObjectDetectorOptions.builder()
+            .setBaseOptions(baseOptions)
+            .setRunningMode(RunningMode.IMAGE)
+            .setScoreThreshold(DETECTOR_SCORE_THRESHOLD)
+            .setMaxResults(MAX_RESULTS)
+            .build()
 
-        val inputTensor = interpreter.getInputTensor(0)
-        val inputShape = inputTensor.shape()
-        require(inputShape.size == 4 && inputShape[0] == 1 && inputShape[3] == 3) {
-            "Unsupported model input shape: ${inputShape.contentToString()}"
-        }
-
-        inputHeight = inputShape[1]
-        inputWidth = inputShape[2]
-        inputDataType = inputTensor.dataType()
-
-        val outputTensor = interpreter.getOutputTensor(0)
-        val outputShape = outputTensor.shape()
-        outputClassCount = outputShape.last()
-        outputDataType = outputTensor.dataType()
-
-        require(labels.size >= outputClassCount) {
-            "labels.txt has ${labels.size} labels but the model outputs $outputClassCount classes"
-        }
-
-        backgroundIndex = labels.indexOfFirst { it.equals("background", ignoreCase = true) }
-            .takeIf { it >= 0 }
+        objectDetector = ObjectDetector.createFromOptions(
+            context,
+            detectorOptions
+        )
 
         Log.i(
             TAG,
-            "Loaded classifier: input=${inputWidth}x$inputHeight $inputDataType, " +
-                "output=$outputClassCount $outputDataType, labels=${labels.size}"
+            "EfficientDet Lite4 object detector ready"
         )
     }
 
-    /** Memory-map the TFLite file directly from the APK assets. */
-    private fun loadModelFile(context: Context, filename: String): MappedByteBuffer {
-        val descriptor = context.assets.openFd(filename)
-        FileInputStream(descriptor.fileDescriptor).use { inputStream ->
-            return inputStream.channel.map(
-                FileChannel.MapMode.READ_ONLY,
-                descriptor.startOffset,
-                descriptor.declaredLength
-            )
-        }
-    }
-
     /**
-     * Classify one captured photo and return the strongest non-background
-     * ImageNet label plus a confidence percentage.
+     * WhatIsThat now uses object detection only.
      *
-     * Camera photos are normally much taller/wider than the model input.
-     * Stretching the whole photo into a 224 x 224 square distorts objects and
-     * includes lots of irrelevant background. We therefore centre-crop to the
-     * model's aspect ratio first, then resize.
+     * There is deliberately no generic image label fallback. If the detector
+     * cannot find a supported object with enough confidence, the app returns
+     * Unknown instead of inventing an unrelated label.
      */
-    fun classify(
+    suspend fun classify(
         bitmap: Bitmap,
         focusTarget: FocusTarget? = null
     ): ClassificationPrediction? {
         return try {
-            val crops = buildAnalysisCrops(bitmap, focusTarget)
-            val combinedScores = FloatArray(outputClassCount)
-            val cropWinners = mutableListOf<Int>()
-
-            crops.forEach { weightedCrop ->
-                val resized = Bitmap.createScaledBitmap(
-                    weightedCrop.bitmap,
-                    inputWidth,
-                    inputHeight,
-                    true
-                )
-
-                val inputBuffer = bitmapToByteBuffer(resized)
-                val scores = runInference(inputBuffer)
-
-                findBestFloatIndex(scores)?.let { cropWinners += it }
-
-                for (index in scores.indices) {
-                    if (index != backgroundIndex) {
-                        combinedScores[index] += scores[index] * weightedCrop.weight
-                    }
-                }
-
-                if (resized !== weightedCrop.bitmap && !resized.isRecycled) {
-                    resized.recycle()
-                }
-
-                if (weightedCrop.bitmap !== bitmap && !weightedCrop.bitmap.isRecycled) {
-                    weightedCrop.bitmap.recycle()
-                }
-            }
-
-            val ranked = combinedScores.indices
-                .asSequence()
-                .filter { it != backgroundIndex }
-                .sortedByDescending { combinedScores[it] }
-                .take(2)
-                .toList()
-
-            val bestIndex = ranked.firstOrNull() ?: return null
-            val secondIndex = ranked.getOrNull(1)
-
-            val bestScore = combinedScores[bestIndex].coerceAtLeast(0f)
-            val secondScore = secondIndex
-                ?.let { combinedScores[it].coerceAtLeast(0f) }
-                ?: 0f
-
-            val confidence = (bestScore * 100f)
-                .roundToInt()
-                .coerceIn(0, 100)
-
-            val marginPercent = ((bestScore - secondScore) * 100f)
-                .roundToInt()
-                .coerceAtLeast(0)
-
-            val agreementCount = cropWinners.count { it == bestIndex }
-
-            val hasEnoughScore = bestScore >= 0.18f
-            val hasUsefulMargin = (bestScore - secondScore) >= 0.035f
-            val hasCropAgreement = agreementCount >= 2
-            val exceptionallyStrong = bestScore >= 0.52f
-
-            val reliable = hasEnoughScore &&
-                (hasUsefulMargin || exceptionallyStrong) &&
-                (hasCropAgreement || exceptionallyStrong)
-
-            val prediction = ClassificationPrediction(
-                label = friendlyLabel(bestIndex),
-                confidencePercent = confidence,
-                isReliable = reliable,
-                agreementCount = agreementCount,
-                marginPercent = marginPercent
-            )
-
-            val mode = if (focusTarget == null) {
-                "multi scale full image"
+            if (focusTarget == null) {
+                classifyGeneral(bitmap)
             } else {
-                "multi scale focus target"
+                classifyFocused(
+                    bitmap = bitmap,
+                    focusTarget = focusTarget
+                )
             }
-
-            Log.d(
+        } catch (exception: Exception) {
+            Log.e(
                 TAG,
-                "Prediction: ${prediction.label} " +
-                    "(${prediction.confidencePercent}%), " +
-                    "reliable=${prediction.isReliable}, " +
-                    "agreement=${prediction.agreementCount}/${crops.size}, " +
-                    "margin=${prediction.marginPercent}% using $mode"
+                "Object detection failed",
+                exception
             )
-
-            logTopPredictions(combinedScores)
-            prediction
-        } catch (e: Exception) {
-            Log.e(TAG, "Classification failed", e)
             null
         }
     }
 
-    private data class WeightedCrop(
-        val bitmap: Bitmap,
-        val weight: Float
-    )
+    private fun classifyGeneral(
+        bitmap: Bitmap
+    ): ClassificationPrediction {
+        val fullCandidates = detectObjects(bitmap)
 
-    /**
-     * One crop is often not enough for a real camera image.
-     *
-     * For a user selected target we analyse the tapped area at three zoom
-     * levels plus a small amount of global context. This makes recognition
-     * much less sensitive to the exact tap location and object size.
-     *
-     * Without a target we analyse three centre crops at different scales.
-     */
-    private fun buildAnalysisCrops(
-        bitmap: Bitmap,
-        focusTarget: FocusTarget?
-    ): List<WeightedCrop> {
-        return if (focusTarget == null) {
-            listOf(
-                WeightedCrop(
-                    cropToModelAspectRatio(bitmap, 1.00f, 0.5f, 0.5f),
-                    0.45f
-                ),
-                WeightedCrop(
-                    cropToModelAspectRatio(bitmap, 0.78f, 0.5f, 0.5f),
-                    0.35f
-                ),
-                WeightedCrop(
-                    cropToModelAspectRatio(bitmap, 0.58f, 0.5f, 0.5f),
-                    0.20f
-                )
+        val fullSelection = selectGeneralCandidate(
+            bitmap = bitmap,
+            candidates = fullCandidates
+        )
+
+        /*
+         * If the first pass is already strong, do not waste time running
+         * another detector pass.
+         */
+        if (
+            fullSelection != null &&
+            fullSelection.score >= STRONG_DETECTION_THRESHOLD
+        ) {
+            return predictionFromCandidate(
+                candidate = fullSelection,
+                reliableThreshold = GENERAL_RELIABLE_THRESHOLD,
+                source = "full image"
             )
+        }
+
+        /*
+         * A second centre crop effectively gives smaller objects more pixels
+         * without discarding the original full image result.
+         */
+        val centreCrop = createCrop(
+            bitmap = bitmap,
+            centreXRatio = 0.5f,
+            centreYRatio = 0.5f,
+            scale = 0.78f
+        )
+
+        val cropSelection = try {
+            selectGeneralCandidate(
+                bitmap = centreCrop,
+                candidates = detectObjects(centreCrop)
+            )
+        } finally {
+            if (
+                centreCrop !== bitmap &&
+                !centreCrop.isRecycled
+            ) {
+                centreCrop.recycle()
+            }
+        }
+
+        val selected = chooseBetterCandidate(
+            first = fullSelection,
+            second = cropSelection
+        )
+
+        return if (selected == null) {
+            unknownPrediction()
         } else {
-            val mappedTarget = mapFocusTargetToBitmap(bitmap, focusTarget)
-
-            listOf(
-                WeightedCrop(
-                    cropToModelAspectRatio(
-                        bitmap,
-                        0.34f,
-                        mappedTarget.first,
-                        mappedTarget.second
-                    ),
-                    0.40f
-                ),
-                WeightedCrop(
-                    cropToModelAspectRatio(
-                        bitmap,
-                        0.50f,
-                        mappedTarget.first,
-                        mappedTarget.second
-                    ),
-                    0.32f
-                ),
-                WeightedCrop(
-                    cropToModelAspectRatio(
-                        bitmap,
-                        0.68f,
-                        mappedTarget.first,
-                        mappedTarget.second
-                    ),
-                    0.20f
-                ),
-                WeightedCrop(
-                    cropToModelAspectRatio(bitmap, 1.00f, 0.5f, 0.5f),
-                    0.08f
-                )
+            predictionFromCandidate(
+                candidate = selected,
+                reliableThreshold = GENERAL_RELIABLE_THRESHOLD,
+                source = "general multi pass"
             )
         }
     }
 
-    private fun runInference(inputBuffer: ByteBuffer): FloatArray {
-        return when (outputDataType) {
-            DataType.FLOAT32 -> {
-                val output = Array(1) { FloatArray(outputClassCount) }
-                interpreter.run(inputBuffer, output)
-                output[0]
-            }
-
-            DataType.UINT8 -> {
-                val output = Array(1) { ByteArray(outputClassCount) }
-                interpreter.run(inputBuffer, output)
-
-                FloatArray(outputClassCount) { index ->
-                    (output[0][index].toInt() and 0xFF) / 255f
-                }
-            }
-
-            else -> throw IllegalStateException(
-                "Unsupported output type: $outputDataType"
-            )
-        }
-    }
-
-    private fun mapFocusTargetToBitmap(
+    private fun classifyFocused(
         bitmap: Bitmap,
         focusTarget: FocusTarget
-    ): Pair<Float, Float> {
-        val bitmapWidth = bitmap.width.toFloat()
-        val bitmapHeight = bitmap.height.toFloat()
-        val sourceAspectRatio = bitmapWidth / bitmapHeight
-        val previewAspectRatio = focusTarget.previewAspectRatio.coerceAtLeast(0.01f)
+    ): ClassificationPrediction {
+        val mappedTarget = mapFocusTargetToBitmap(
+            bitmap = bitmap,
+            focusTarget = focusTarget
+        )
 
-        val mappedXRatio: Float
-        val mappedYRatio: Float
+        val targetX = mappedTarget.first * bitmap.width
+        val targetY = mappedTarget.second * bitmap.height
 
-        if (sourceAspectRatio > previewAspectRatio) {
-            val visibleWidthFraction =
-                (previewAspectRatio / sourceAspectRatio).coerceIn(0f, 1f)
-            val croppedSideFraction = (1f - visibleWidthFraction) / 2f
+        /*
+         * Pass one keeps the entire image. If the tapped point is already
+         * inside a detected box, this is the best possible answer because no
+         * context was removed.
+         */
+        val fullCandidates = detectObjects(bitmap)
 
-            mappedXRatio = (
-                croppedSideFraction +
-                    focusTarget.xRatio.coerceIn(0f, 1f) * visibleWidthFraction
-                ).coerceIn(0f, 1f)
+        val directHit = fullCandidates
+            .filter { candidate ->
+                candidate.box.contains(
+                    targetX,
+                    targetY
+                )
+            }
+            .maxByOrNull { candidate ->
+                candidate.score
+            }
 
-            mappedYRatio = focusTarget.yRatio.coerceIn(0f, 1f)
-        } else if (sourceAspectRatio < previewAspectRatio) {
-            val visibleHeightFraction =
-                (sourceAspectRatio / previewAspectRatio).coerceIn(0f, 1f)
-            val croppedTopFraction = (1f - visibleHeightFraction) / 2f
-
-            mappedXRatio = focusTarget.xRatio.coerceIn(0f, 1f)
-
-            mappedYRatio = (
-                croppedTopFraction +
-                    focusTarget.yRatio.coerceIn(0f, 1f) * visibleHeightFraction
-                ).coerceIn(0f, 1f)
-        } else {
-            mappedXRatio = focusTarget.xRatio.coerceIn(0f, 1f)
-            mappedYRatio = focusTarget.yRatio.coerceIn(0f, 1f)
+        if (directHit != null) {
+            return predictionFromCandidate(
+                candidate = directHit,
+                reliableThreshold = FOCUSED_RELIABLE_THRESHOLD,
+                source = "focus direct hit"
+            )
         }
 
-        return mappedXRatio to mappedYRatio
+        /*
+         * If the object was too small for the full image pass, run a generous
+         * crop around the tapped area. This magnifies the target but still
+         * leaves enough surrounding context for the detector.
+         */
+        val wideCrop = createCrop(
+            bitmap = bitmap,
+            centreXRatio = mappedTarget.first,
+            centreYRatio = mappedTarget.second,
+            scale = 0.72f
+        )
+
+        val wideSelection = try {
+            selectCropTarget(
+                crop = wideCrop,
+                candidates = detectObjects(wideCrop)
+            )
+        } finally {
+            if (
+                wideCrop !== bitmap &&
+                !wideCrop.isRecycled
+            ) {
+                wideCrop.recycle()
+            }
+        }
+
+        if (
+            wideSelection != null &&
+            wideSelection.score >= STRONG_DETECTION_THRESHOLD
+        ) {
+            return predictionFromCandidate(
+                candidate = wideSelection,
+                reliableThreshold = FOCUSED_RELIABLE_THRESHOLD,
+                source = "focus wide crop"
+            )
+        }
+
+        /*
+         * Final pass zooms further only when the previous two passes were not
+         * decisive. This is especially useful for small mice, remotes, phones,
+         * bottles and similar objects.
+         */
+        val closeCrop = createCrop(
+            bitmap = bitmap,
+            centreXRatio = mappedTarget.first,
+            centreYRatio = mappedTarget.second,
+            scale = 0.52f
+        )
+
+        val closeSelection = try {
+            selectCropTarget(
+                crop = closeCrop,
+                candidates = detectObjects(closeCrop)
+            )
+        } finally {
+            if (
+                closeCrop !== bitmap &&
+                !closeCrop.isRecycled
+            ) {
+                closeCrop.recycle()
+            }
+        }
+
+        val selected = chooseBetterCandidate(
+            first = wideSelection,
+            second = closeSelection
+        )
+
+        return if (selected == null) {
+            unknownPrediction()
+        } else {
+            predictionFromCandidate(
+                candidate = selected,
+                reliableThreshold = FOCUSED_RELIABLE_THRESHOLD,
+                source = "focus multi pass"
+            )
+        }
     }
 
-    private fun cropToModelAspectRatio(
-        bitmap: Bitmap,
-        scale: Float,
-        centerXRatio: Float,
-        centerYRatio: Float
-    ): Bitmap {
-        val safeScale = scale.coerceIn(0.2f, 1f)
-        val targetRatio = inputWidth.toFloat() / inputHeight.toFloat()
-        val maximumCropWidth = bitmap.width * safeScale
-        val maximumCropHeight = bitmap.height * safeScale
+    private fun detectObjects(
+        bitmap: Bitmap
+    ): List<DetectedCandidate> {
+        val mpImage = BitmapImageBuilder(bitmap).build()
 
-        val cropWidth: Int
-        val cropHeight: Int
+        val result = objectDetector.detect(mpImage)
 
-        if (maximumCropWidth / maximumCropHeight > targetRatio) {
-            cropHeight = maximumCropHeight
-                .roundToInt()
-                .coerceIn(1, bitmap.height)
+        val candidates = result.detections()
+            .mapNotNull { detection ->
+                val category = detection.categories()
+                    .maxByOrNull { category ->
+                        category.score()
+                    }
+                    ?: return@mapNotNull null
 
-            cropWidth = (cropHeight * targetRatio)
-                .roundToInt()
-                .coerceIn(1, bitmap.width)
+                val label = category.categoryName()
+                    .trim()
+                    .takeIf { value ->
+                        value.isNotEmpty() &&
+                            value != "???"
+                    }
+                    ?: return@mapNotNull null
+
+                DetectedCandidate(
+                    label = friendlyLabel(label),
+                    score = category.score(),
+                    box = detection.boundingBox()
+                )
+            }
+            .sortedByDescending { candidate ->
+                candidate.score
+            }
+
+        if (candidates.isEmpty()) {
+            Log.d(
+                TAG,
+                "No detector candidates"
+            )
         } else {
-            cropWidth = maximumCropWidth
-                .roundToInt()
-                .coerceIn(1, bitmap.width)
+            val summary = candidates
+                .take(5)
+                .joinToString { candidate ->
+                    "${candidate.label}=" +
+                        "${(candidate.score * 100f).roundToInt()}%"
+                }
 
-            cropHeight = (cropWidth / targetRatio)
-                .roundToInt()
-                .coerceIn(1, bitmap.height)
+            Log.d(
+                TAG,
+                "Detector candidates: $summary"
+            )
         }
 
-        val centerX = (
-            centerXRatio.coerceIn(0f, 1f) * bitmap.width
+        return candidates
+    }
+
+    /**
+     * General mode favours confidence first, then objects which are reasonably
+     * large and close to the centre of the photograph.
+     */
+    private fun selectGeneralCandidate(
+        bitmap: Bitmap,
+        candidates: List<DetectedCandidate>
+    ): DetectedCandidate? {
+        if (candidates.isEmpty()) {
+            return null
+        }
+
+        val imageArea = (
+            bitmap.width.toFloat() *
+                bitmap.height.toFloat()
+            ).coerceAtLeast(1f)
+
+        val centreX = bitmap.width / 2f
+        val centreY = bitmap.height / 2f
+
+        val halfDiagonal = hypot(
+            centreX,
+            centreY
+        ).coerceAtLeast(1f)
+
+        return candidates.maxByOrNull { candidate ->
+            val boxArea = (
+                candidate.box.width() *
+                    candidate.box.height()
+                ).coerceAtLeast(0f)
+
+            val areaFraction = (
+                boxArea / imageArea
+                ).coerceIn(0f, 1f)
+
+            val centreDistance = hypot(
+                candidate.box.centerX() - centreX,
+                candidate.box.centerY() - centreY
+            ) / halfDiagonal
+
+            val centreScore = (
+                1f - centreDistance
+                ).coerceIn(0f, 1f)
+
+            val sizeScore = sqrt(areaFraction)
+
+            candidate.score * 0.78f +
+                centreScore * 0.14f +
+                sizeScore * 0.08f
+        }
+    }
+
+    /**
+     * A focus crop is centred on the object the user tapped, so candidates
+     * nearer the middle of that crop receive a small preference.
+     */
+    private fun selectCropTarget(
+        crop: Bitmap,
+        candidates: List<DetectedCandidate>
+    ): DetectedCandidate? {
+        if (candidates.isEmpty()) {
+            return null
+        }
+
+        val centreX = crop.width / 2f
+        val centreY = crop.height / 2f
+
+        val halfDiagonal = hypot(
+            centreX,
+            centreY
+        ).coerceAtLeast(1f)
+
+        return candidates.maxByOrNull { candidate ->
+            val distance = hypot(
+                candidate.box.centerX() - centreX,
+                candidate.box.centerY() - centreY
+            ) / halfDiagonal
+
+            val centreScore = (
+                1f - distance
+                ).coerceIn(0f, 1f)
+
+            candidate.score * 0.86f +
+                centreScore * 0.14f
+        }
+    }
+
+    private fun chooseBetterCandidate(
+        first: DetectedCandidate?,
+        second: DetectedCandidate?
+    ): DetectedCandidate? {
+        return when {
+            first == null -> second
+            second == null -> first
+            second.score > first.score -> second
+            else -> first
+        }
+    }
+
+    private fun predictionFromCandidate(
+        candidate: DetectedCandidate,
+        reliableThreshold: Float,
+        source: String
+    ): ClassificationPrediction {
+        val confidence = (
+            candidate.score * 100f
+            ).roundToInt().coerceIn(0, 100)
+
+        val reliable = candidate.score >= reliableThreshold
+
+        Log.d(
+            TAG,
+            "Selected ${candidate.label} " +
+                "($confidence%), " +
+                "reliable=$reliable, " +
+                "source=$source"
+        )
+
+        return ClassificationPrediction(
+            label = candidate.label,
+            confidencePercent = confidence,
+            isReliable = reliable
+        )
+    }
+
+    private fun unknownPrediction(): ClassificationPrediction {
+        Log.d(
+            TAG,
+            "No supported object was detected reliably"
+        )
+
+        return ClassificationPrediction(
+            label = "Unknown object",
+            confidencePercent = 0,
+            isReliable = false
+        )
+    }
+
+    private fun createCrop(
+        bitmap: Bitmap,
+        centreXRatio: Float,
+        centreYRatio: Float,
+        scale: Float
+    ): Bitmap {
+        val safeScale = scale.coerceIn(
+            0.35f,
+            1f
+        )
+
+        val cropWidth = (
+            bitmap.width * safeScale
+            ).roundToInt()
+            .coerceIn(
+                1,
+                bitmap.width
+            )
+
+        val cropHeight = (
+            bitmap.height * safeScale
+            ).roundToInt()
+            .coerceIn(
+                1,
+                bitmap.height
+            )
+
+        val centreX = (
+            centreXRatio.coerceIn(0f, 1f) *
+                bitmap.width
             ).roundToInt()
 
-        val centerY = (
-            centerYRatio.coerceIn(0f, 1f) * bitmap.height
+        val centreY = (
+            centreYRatio.coerceIn(0f, 1f) *
+                bitmap.height
             ).roundToInt()
 
-        val maximumLeft = (bitmap.width - cropWidth).coerceAtLeast(0)
-        val maximumTop = (bitmap.height - cropHeight).coerceAtLeast(0)
+        val maxLeft = (
+            bitmap.width - cropWidth
+            ).coerceAtLeast(0)
 
-        val left = (centerX - cropWidth / 2).coerceIn(0, maximumLeft)
-        val top = (centerY - cropHeight / 2).coerceIn(0, maximumTop)
+        val maxTop = (
+            bitmap.height - cropHeight
+            ).coerceAtLeast(0)
+
+        val left = (
+            centreX - cropWidth / 2
+            ).coerceIn(
+                0,
+                maxLeft
+            )
+
+        val top = (
+            centreY - cropHeight / 2
+            ).coerceIn(
+                0,
+                maxTop
+            )
 
         return Bitmap.createBitmap(
             bitmap,
@@ -408,99 +554,110 @@ class Classifier(context: Context) {
         )
     }
 
-    private fun logTopPredictions(scores: FloatArray) {
-        scores.indices
-            .asSequence()
-            .filter { it != backgroundIndex }
-            .sortedByDescending { scores[it] }
-            .take(3)
-            .joinToString { index ->
-                "${friendlyLabel(index)}=${(scores[index] * 100f).roundToInt()}%"
-            }
-            .also { topPredictions ->
-                Log.d(TAG, "Top predictions: $topPredictions")
-            }
-    }
+    /**
+     * PreviewView uses FILL_CENTER, so the live preview can crop part of the
+     * camera image. This converts the tapped preview coordinate back into the
+     * corresponding full photograph coordinate.
+     */
+    private fun mapFocusTargetToBitmap(
+        bitmap: Bitmap,
+        focusTarget: FocusTarget
+    ): Pair<Float, Float> {
+        val bitmapWidth = bitmap.width.toFloat()
+        val bitmapHeight = bitmap.height.toFloat()
 
-    private fun bitmapToByteBuffer(bitmap: Bitmap): ByteBuffer {
-        val bytesPerChannel = when (inputDataType) {
-            DataType.FLOAT32 -> 4
-            DataType.UINT8 -> 1
-            else -> throw IllegalStateException("Unsupported input type: $inputDataType")
+        val bitmapAspectRatio =
+            bitmapWidth / bitmapHeight
+
+        val previewAspectRatio =
+            focusTarget.previewAspectRatio
+                .coerceAtLeast(0.01f)
+
+        val mappedX: Float
+        val mappedY: Float
+
+        if (bitmapAspectRatio > previewAspectRatio) {
+            val visibleWidthFraction = (
+                previewAspectRatio /
+                    bitmapAspectRatio
+                ).coerceIn(0f, 1f)
+
+            val sideCrop = (
+                1f - visibleWidthFraction
+                ) / 2f
+
+            mappedX = (
+                sideCrop +
+                    focusTarget.xRatio
+                        .coerceIn(0f, 1f) *
+                    visibleWidthFraction
+                ).coerceIn(0f, 1f)
+
+            mappedY = focusTarget.yRatio
+                .coerceIn(0f, 1f)
+        } else if (
+            bitmapAspectRatio <
+            previewAspectRatio
+        ) {
+            val visibleHeightFraction = (
+                bitmapAspectRatio /
+                    previewAspectRatio
+                ).coerceIn(0f, 1f)
+
+            val topCrop = (
+                1f - visibleHeightFraction
+                ) / 2f
+
+            mappedX = focusTarget.xRatio
+                .coerceIn(0f, 1f)
+
+            mappedY = (
+                topCrop +
+                    focusTarget.yRatio
+                        .coerceIn(0f, 1f) *
+                    visibleHeightFraction
+                ).coerceIn(0f, 1f)
+        } else {
+            mappedX = focusTarget.xRatio
+                .coerceIn(0f, 1f)
+
+            mappedY = focusTarget.yRatio
+                .coerceIn(0f, 1f)
         }
 
-        val buffer = ByteBuffer.allocateDirect(inputWidth * inputHeight * 3 * bytesPerChannel)
-            .order(ByteOrder.nativeOrder())
-
-        val pixels = IntArray(inputWidth * inputHeight)
-        bitmap.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
-
-        for (pixel in pixels) {
-            val red = (pixel shr 16) and 0xFF
-            val green = (pixel shr 8) and 0xFF
-            val blue = pixel and 0xFF
-
-            when (inputDataType) {
-                DataType.FLOAT32 -> {
-                    buffer.putFloat((red - 127.5f) / 127.5f)
-                    buffer.putFloat((green - 127.5f) / 127.5f)
-                    buffer.putFloat((blue - 127.5f) / 127.5f)
-                }
-
-                DataType.UINT8 -> {
-                    buffer.put(red.toByte())
-                    buffer.put(green.toByte())
-                    buffer.put(blue.toByte())
-                }
-
-                else -> Unit
-            }
-        }
-
-        buffer.rewind()
-        return buffer
+        return mappedX to mappedY
     }
 
-    private fun findBestFloatIndex(scores: FloatArray): Int? {
-        var bestIndex = -1
-        var bestScore = Float.NEGATIVE_INFINITY
-
-        for (index in scores.indices) {
-            if (index == backgroundIndex) continue
-            if (scores[index] > bestScore) {
-                bestScore = scores[index]
-                bestIndex = index
-            }
-        }
-
-        return bestIndex.takeIf { it >= 0 }
-    }
-
-
-    /** ImageNet labels often contain comma-separated synonyms; show the shortest useful name. */
-    private fun friendlyLabel(index: Int): String {
-        val rawLabel = labels[index]
-            .substringBefore(',')
+    private fun friendlyLabel(
+        label: String
+    ): String {
+        val normalized = label
             .trim()
+            .lowercase()
 
-        val friendlier = when (rawLabel.lowercase()) {
-            "hand blower" -> "Hair dryer"
-            "cellular telephone" -> "Mobile phone"
-            "computer keyboard" -> "Keyboard"
-            "notebook" -> "Laptop"
-            else -> rawLabel
+        val friendlier = when (normalized) {
+            "cell phone" -> "Phone"
+            "tv" -> "Television"
+            "sports ball" -> "Ball"
+            "potted plant" -> "Plant"
+            "dining table" -> "Table"
+            "hair drier" -> "Hair dryer"
+            else -> label.trim()
         }
 
-        return friendlier.replaceFirstChar { character ->
-            if (character.isLowerCase()) {
-                character.titlecase()
-            } else {
-                character.toString()
+        return friendlier
+            .replaceFirstChar { character ->
+                if (character.isLowerCase()) {
+                    character.titlecase()
+                } else {
+                    character.toString()
+                }
             }
-        }
     }
 
     fun close() {
-        interpreter.close()
+        runCatching {
+            objectDetector.close()
+        }
     }
 }
